@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dev-dist/
+cdk.out/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.env
+.DS_Store
+web/public/config.json
