@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { safeHref } from '../lib/links'
 import type { Recipe } from '../types'
 
 const tagsOf = (r: Recipe) => r.tags ?? [] // recipes saved before tags existed have none
@@ -93,6 +94,17 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList }: Props) {
                     </span>
                     {tagsOf(r).length > 0 && <span className="card-tags">{tagsOf(r).join(' · ')}</span>}
                   </button>
+                  {safeHref(r.link) && (
+                    <a
+                      className="card-link"
+                      href={safeHref(r.link)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={`Open the ${r.title} recipe page`}
+                    >
+                      ↗
+                    </a>
+                  )}
                 </li>
               ))}
             </ul>

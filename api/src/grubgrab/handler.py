@@ -6,6 +6,7 @@ import base64
 import binascii
 import json
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlparse
 
 from .aggregate import aggregate, combine
 from .store import INVITE_LENGTH, Store, normalise_invite_code
@@ -13,6 +14,7 @@ from .store import INVITE_LENGTH, Store, normalise_invite_code
 MAX_TEXT = 200
 MAX_NOTES = 10_000
 MAX_INGREDIENTS = 200
+MAX_LINK = 2000
 MAX_TAGS = 20
 MAX_TAG_LEN = 30
 MAX_RECIPES_PER_LIST = 50
@@ -93,6 +95,17 @@ def _quantity(value) -> Decimal | None:
     return q
 
 
+def _link(value) -> str:
+    """Where the recipe came from. Only http(s) web addresses, so a link can never run code when tapped."""
+    link = _text(value, "Link", max_len=MAX_LINK)
+    if not link:
+        return ""
+    parsed = urlparse(link)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        raise ApiError(400, "Link must be a web address starting with http:// or https://")
+    return link
+
+
 def _tags(value) -> list[str]:
     """Free-form labels like "soup" or "fish". Lower-cased and de-duplicated so filters group them."""
     if value is None:
@@ -137,6 +150,7 @@ def _validate_recipe(data: dict) -> dict:
         "title": _text(data.get("title"), "Title", required=True),
         "servings": _servings(data.get("servings")),
         "notes": _text(data.get("notes"), "Notes", max_len=MAX_NOTES),
+        "link": _link(data.get("link")),
         "tags": _tags(data.get("tags")),
         "ingredients": ingredients,
     }

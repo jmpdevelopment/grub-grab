@@ -41,13 +41,14 @@ describe('RecipeEditor', () => {
     await user.type(screen.getAllByPlaceholderText('Qty')[0], '1,5')
     await user.type(screen.getAllByPlaceholderText('Unit')[0], ' slices ')
     await user.type(names()[1], 'Butter')
-    await user.type(screen.getByPlaceholderText('Method, link, tips…'), 'Toast it')
+    await user.type(screen.getByPlaceholderText('Method, tips…'), 'Toast it')
 
     await user.click(screen.getByRole('button', { name: 'Save' }))
     expect(onSave).toHaveBeenCalledWith({
       title: 'Toast',
       servings: 2,
       notes: 'Toast it',
+      link: '',
       tags: [],
       ingredients: [
         { name: 'Bread', quantity: 1.5, unit: 'slices' },
@@ -119,7 +120,7 @@ describe('RecipeEditor', () => {
     expect(screen.getByRole('heading', { name: 'Edit recipe' })).toBeInTheDocument()
     expect(screen.getByPlaceholderText('e.g. Chicken curry')).toHaveValue('Pasta')
     expect(screen.getByPlaceholderText('4')).toHaveValue('2')
-    expect(screen.getByPlaceholderText('Method, link, tips…')).toHaveValue('Boil it')
+    expect(screen.getByPlaceholderText('Method, tips…')).toHaveValue('Boil it')
     expect(names().map((i) => i.value)).toEqual(['Spaghetti', 'Salt', ''])
     expect(screen.getAllByPlaceholderText('Qty').map((i) => (i as HTMLInputElement).value)).toEqual(['500', '', ''])
     // Only named rows get a remove button.
@@ -132,8 +133,41 @@ describe('RecipeEditor', () => {
       title: 'Pasta',
       servings: null,
       notes: 'Boil it',
+      link: '',
       tags: [],
       ingredients: [{ name: 'Salt', quantity: null, unit: '' }],
+    })
+  })
+
+  describe('link', () => {
+    const open = () => screen.queryByRole('link', { name: 'Open ↗' })
+
+    it("shows an existing recipe's link with a button to open it in a new tab", () => {
+      setup({ recipe: { ...PASTA, link: 'https://www.kwestiasmaku.com/przepis/pasta' } })
+      expect(screen.getByLabelText('Link')).toHaveValue('https://www.kwestiasmaku.com/przepis/pasta')
+      expect(open()).toHaveAttribute('href', 'https://www.kwestiasmaku.com/przepis/pasta')
+      expect(open()).toHaveAttribute('target', '_blank')
+      expect(open()).toHaveAttribute('rel', 'noopener noreferrer')
+    })
+
+    it('adds https:// to a bare address and saves it', async () => {
+      const { user, onSave } = setup()
+      await user.type(screen.getByPlaceholderText('e.g. Chicken curry'), 'Zurek')
+      expect(open()).not.toBeInTheDocument()
+      await user.type(screen.getByLabelText('Link'), '  kwestiasmaku.com/przepis/zurek ')
+      expect(open()).toHaveAttribute('href', 'https://kwestiasmaku.com/przepis/zurek')
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ link: 'https://kwestiasmaku.com/przepis/zurek' }))
+    })
+
+    it('refuses something that is not a web address', async () => {
+      const { user, onSave } = setup()
+      await user.type(screen.getByPlaceholderText('e.g. Chicken curry'), 'Zurek')
+      await user.type(screen.getByLabelText('Link'), 'javascript:alert(1)')
+      expect(open()).not.toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      expect(screen.getByText("That link doesn't look like a web address")).toBeInTheDocument()
+      expect(onSave).not.toHaveBeenCalled()
     })
   })
 

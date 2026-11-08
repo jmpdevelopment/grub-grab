@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { parseIngredientLine } from '../lib/aggregate'
+import { normaliseLink, safeHref } from '../lib/links'
 import { cleanTag, SUGGESTED_TAGS } from '../lib/tags'
 import type { Ingredient, Recipe, RecipeInput } from '../types'
 
@@ -20,6 +21,7 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
   const [title, setTitle] = useState(recipe?.title ?? '')
   const [servings, setServings] = useState(recipe?.servings ? String(recipe.servings) : '')
   const [notes, setNotes] = useState(recipe?.notes ?? '')
+  const [link, setLink] = useState(recipe?.link ?? '')
   const [tags, setTags] = useState<string[]>(recipe?.tags ?? [])
   const [tagDraft, setTagDraft] = useState('')
   const [rows, setRows] = useState<Row[]>(recipe ? [...recipe.ingredients.map(toRow), emptyRow()] : [emptyRow()])
@@ -55,10 +57,13 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
     setTags((prev) => withTag(prev, raw))
     setTagDraft('')
   }
+  const openHref = safeHref(normaliseLink(link) ?? undefined) // only once it's a usable web address
   const suggestions = [...new Set([...knownTags, ...SUGGESTED_TAGS])].filter((t) => !tags.includes(t))
 
   const save = async () => {
     if (!title.trim()) return setError('Give the recipe a title')
+    const cleanLink = normaliseLink(link)
+    if (cleanLink === null) return setError("That link doesn't look like a web address")
     const ingredients: Ingredient[] = []
     for (const r of rows) {
       if (!r.name.trim()) continue
@@ -71,7 +76,7 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
     try {
       // A tag still being typed counts, so it isn't lost by tapping Save straight away.
       const allTags = withTag(tags, tagDraft)
-      await onSave({ title: title.trim(), servings: servings ? Number(servings) : null, notes, tags: allTags, ingredients })
+      await onSave({ title: title.trim(), servings: servings ? Number(servings) : null, notes, link: cleanLink, tags: allTags, ingredients })
     } catch (e) {
       setError((e as Error).message)
       setBusy(false)
@@ -92,6 +97,26 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
           <span>Title</span>
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Chicken curry" autoFocus={!recipe} />
         </label>
+        <div className="field">
+          <label htmlFor="recipe-link">Link</label>
+          <div className="link-row">
+            <input
+              id="recipe-link"
+              type="url"
+              inputMode="url"
+              autoCapitalize="off"
+              autoCorrect="off"
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+              placeholder="Where the recipe is from (optional)"
+            />
+            {openHref && (
+              <a className="btn secondary" href={openHref} target="_blank" rel="noopener noreferrer">
+                Open ↗
+              </a>
+            )}
+          </div>
+        </div>
         <label className="field narrow">
           <span>Serves</span>
           <input inputMode="numeric" value={servings} onChange={(e) => setServings(e.target.value.replace(/\D/g, ''))} placeholder="4" />
@@ -162,7 +187,7 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
 
         <label className="field">
           <span>Notes</span>
-          <textarea rows={4} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Method, link, tips…" />
+          <textarea rows={4} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Method, tips…" />
         </label>
 
         {onDelete && (

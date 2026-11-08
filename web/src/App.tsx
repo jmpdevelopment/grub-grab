@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { HouseholdSetup } from './components/HouseholdSetup'
+import { PullToRefresh } from './components/PullToRefresh'
 import { ListView } from './components/ListView'
 import { RecipeEditor } from './components/RecipeEditor'
 import { RecipesView } from './components/RecipesView'
 import { SettingsView } from './components/SettingsView'
+import { updateApp, watchForAppUpdates } from './lib/appUpdate'
 import { completeSignIn, currentEmail, getAccessToken, signIn, signOut } from './lib/auth'
 import { AuthRequiredError, CloudBackend, LocalBackend } from './lib/backend'
 import { loadConfig, type AppConfig } from './lib/config'
@@ -30,6 +32,7 @@ export default function App() {
 
   // ---- startup -------------------------------------------------------------
   useEffect(() => {
+    watchForAppUpdates()
     ;(async () => {
       const cfg = await loadConfig()
       if (!cfg) return setBoot({ state: 'ready', backend: new LocalBackend(), cfg: null })
@@ -76,6 +79,12 @@ export default function App() {
 
   useEffect(() => {
     refresh()
+  }, [refresh])
+
+  /** Pull-to-refresh: switch to a newly deployed version if there is one, otherwise reload the data. */
+  const pullRefresh = useCallback(async () => {
+    if (await updateApp()) return
+    await refresh()
   }, [refresh])
 
   // Keep the list in sync with the other phone while it's open.
@@ -163,6 +172,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <PullToRefresh onRefresh={pullRefresh} />
       {error && (
         <button className="banner" role="alert" onClick={() => setError(null)}>
           {error}

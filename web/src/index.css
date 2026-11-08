@@ -168,3 +168,26 @@ input[type='checkbox'] { width: 24px; height: 24px; accent-color: var(--green); 
 /* One scrolling row of filter chips; scrolls on its own so the page never scrolls sideways. */
 .tag-filter { display: flex; gap: 8px; overflow-x: auto; margin: 0 -16px 12px; padding: 0 16px 2px; scrollbar-width: none; }
 .card-tags { display: block; color: var(--green); font-size: 0.82rem; margin-top: 2px; }
+
+/* ---- recipe link ---- */
+.field > label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 6px; }
+.link-row { display: flex; gap: 8px; align-items: center; }
+.link-row input { flex: 1; min-width: 0; }
+.link-row .btn { white-space: nowrap; text-decoration: none; }
+.card-link {
+  display: flex; align-items: center; padding: 0 16px; color: var(--green); font-size: 1.3rem; text-decoration: none;
+  border-left: 1px solid var(--line);
+}
+
+/* ---- pull to refresh ---- */
+body { overscroll-behavior-y: contain; } /* our pull replaces the browser's own reload gesture */
+.ptr {
+  position: fixed; top: calc(var(--safe-top) + 4px); left: 50%; z-index: 20;
+  display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: 0 2px 10px rgb(0 0 0 / 0.12);
+  font-size: 0.9rem; color: var(--muted); pointer-events: none;
+}
+.ptr-icon { color: var(--green); font-size: 1.1rem; display: inline-block; }
+.ptr-icon.spin { animation: ptr-spin 0.8s linear infinite; }
+@keyframes ptr-spin { to { rotate: 360deg; } }
+@media (prefers-reduced-motion: reduce) { .ptr-icon.spin { animation: none; } }

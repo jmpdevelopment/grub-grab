@@ -33,7 +33,7 @@ def _strip_keys(item: dict) -> dict:
 
 
 def _recipe(item: dict) -> dict:
-    return {"tags": [], **_strip_keys(item)}  # recipes saved before tags existed have none
+    return {"tags": [], "link": "", **_strip_keys(item)}  # recipes saved before these fields existed
 
 
 def random_invite_code() -> str:
@@ -175,6 +175,7 @@ class Store:
             "title": recipe["title"],
             "servings": recipe.get("servings"),
             "notes": recipe.get("notes", ""),
+            "link": recipe.get("link", ""),
             "tags": recipe.get("tags", []),
             "ingredients": recipe["ingredients"],
             "updatedAt": self._now(),

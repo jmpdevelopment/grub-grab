@@ -306,6 +306,12 @@ class TestRecipes:
             ({"ingredients": [{"name": "Egg", "quantity": 1_000_001}]}, "Invalid quantity: 1000001"),
             ({"ingredients": [{"name": "Egg", "quantity": True}]}, "Invalid quantity: True"),
             ({"ingredients": [{"name": "Egg", "quantity": [1]}]}, "Invalid quantity: [1]"),
+            ({"link": 5}, "Link must be text"),
+            ({"link": "x" * 2001}, "Link is too long (max 2000)"),
+            ({"link": "javascript:alert(1)"}, "Link must be a web address starting with http:// or https://"),
+            ({"link": "kwestiasmaku.com/przepis"}, "Link must be a web address starting with http:// or https://"),
+            ({"link": "https://"}, "Link must be a web address starting with http:// or https://"),
+            ({"link": "ftp://example.com/x"}, "Link must be a web address starting with http:// or https://"),
             ({"tags": "soup"}, "Tags must be a list"),
             ({"tags": [5]}, "Tag must be text"),
             ({"tags": ["x" * 31]}, "Tag is too long (max 30)"),
@@ -323,11 +329,19 @@ class TestRecipes:
         assert status == 200 and updated["tags"] == []
         assert create(store, {"title": "x", "tags": [f"t{n}" for n in range(20)]})["tags"][-1] == "t19"  # 20 is fine
 
-    def test_recipes_saved_before_tags_existed_read_as_untagged(self, store):
+    def test_recipes_saved_before_tags_and_links_existed(self, store):
         hh = store.household_for("alice")
         store.table.put_item(Item={"PK": f"HH#{hh}", "SK": "RECIPE#old", "id": "old", "title": "Old", "ingredients": []})
-        assert call(store, "GET /recipes/{id}", path={"id": "old"})[1]["tags"] == []
-        assert call(store, "GET /recipes")[1][0]["tags"] == []
+        for got in (call(store, "GET /recipes/{id}", path={"id": "old"})[1], call(store, "GET /recipes")[1][0]):
+            assert got["tags"] == [] and got["link"] == ""
+
+    def test_link_is_saved_and_can_be_cleared(self, store):
+        r = create(store, {"title": "Zurek", "link": "  HTTPS://www.kwestiasmaku.com/przepis/zurek?x=1  "})
+        assert r["link"] == "HTTPS://www.kwestiasmaku.com/przepis/zurek?x=1"
+        assert call(store, "GET /recipes/{id}", path={"id": r["id"]})[1]["link"] == r["link"]
+        assert create(store, {"title": "Old site", "link": "http://example.com"})["link"] == "http://example.com"
+        _, cleared = call(store, "PUT /recipes/{id}", path={"id": r["id"]}, body={"title": "Zurek", "link": None})
+        assert cleared["link"] == ""
 
     def test_boundary_values_accepted(self, store):
         r = create(

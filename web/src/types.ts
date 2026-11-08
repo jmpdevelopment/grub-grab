@@ -12,6 +12,8 @@ export interface Recipe {
   ingredients: Ingredient[]
   /** Lower-case labels like "soup" or "fish". Missing on recipes saved before tags existed. */
   tags?: string[]
+  /** Web page the recipe came from ('' or missing if none). */
+  link?: string
 }
 
 export type RecipeInput = Omit<Recipe, 'id'>

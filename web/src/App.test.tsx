@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { POLL_MS } from './App'
@@ -128,6 +128,34 @@ describe('local mode (no config.json)', () => {
     const user = await renderApp()
     await user.click(await screen.findByRole('button', { name: /Settings/ }))
     expect(screen.getByText('Local mode')).toBeInTheDocument()
+  })
+
+  it('pull to refresh switches to a newly deployed version instead of reloading data', async () => {
+    const reload = vi.fn()
+    vi.stubGlobal('location', { ...window.location, reload })
+    // The browser's service worker objects (jsdom has none): a new version has finished installing.
+    const newVersion = { state: 'activated', addEventListener: vi.fn() }
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        controller: {},
+        addEventListener: vi.fn(),
+        getRegistration: async () => ({ update: async () => {}, installing: null, waiting: newVersion }),
+      },
+    })
+    try {
+      await renderApp()
+      await screen.findByText('No recipes yet.')
+      await act(async () => {
+        fireEvent.touchStart(window, { touches: [{ clientY: 0 }] })
+        fireEvent.touchMove(window, { touches: [{ clientY: 400 }] })
+        fireEvent.touchEnd(window, { touches: [] })
+      })
+      await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    } finally {
+      delete (navigator as { serviceWorker?: unknown }).serviceWorker
+      vi.unstubAllGlobals()
+    }
   })
 
   it('does not poll in local mode', async () => {
@@ -273,6 +301,19 @@ describe('cloud mode', () => {
         await user.click(await screen.findByRole('button', { name: 'Not you? Sign out' }))
         expect(window.location.assign).toHaveBeenCalledWith(expect.stringContaining('https://auth.example.com/logout?'))
       })
+    })
+
+    it("pull to refresh brings in the other person's changes", async () => {
+      const { state } = fakeApi({ recipes: [PASTA] })
+      await renderApp()
+      await screen.findByText('Pasta')
+      state.recipes = [...state.recipes, { id: 'n', title: 'Added on the other phone', servings: null, notes: '', ingredients: [] }]
+      await act(async () => {
+        fireEvent.touchStart(window, { touches: [{ clientY: 0 }] })
+        fireEvent.touchMove(window, { touches: [{ clientY: 400 }] })
+        fireEvent.touchEnd(window, { touches: [] })
+      })
+      expect(await screen.findByText('Added on the other phone')).toBeInTheDocument()
     })
 
     it('shows the app with an error banner if the account cannot be loaded', async () => {

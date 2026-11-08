@@ -25,6 +25,19 @@ function setup(recipes: Recipe[], hasList = false) {
 const tagged = (r: Recipe, ...tags: string[]): Recipe => ({ ...r, tags })
 
 describe('RecipesView', () => {
+  it('has a one-tap link to the recipe page, only for safe web links', () => {
+    setup([
+      { ...PASTA, link: 'https://www.kwestiasmaku.com/przepis/pasta' },
+      { ...SOUP, link: 'javascript:alert(1)' },
+      recipe('c', 'Curry'),
+    ])
+    const links = screen.getAllByRole('link')
+    expect(links).toHaveLength(1)
+    expect(links[0]).toHaveAccessibleName('Open the Pasta recipe page')
+    expect(links[0]).toHaveAttribute('href', 'https://www.kwestiasmaku.com/przepis/pasta')
+    expect(links[0]).toHaveAttribute('target', '_blank')
+  })
+
   describe('tags', () => {
     const titles = () => screen.getAllByRole('listitem').map((li) => li.querySelector('strong')!.textContent)
     const chip = (name: string) => within(screen.getByRole('group', { name: 'Filter by tag' })).getByRole('button', { name })

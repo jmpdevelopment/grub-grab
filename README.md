@@ -2,7 +2,7 @@
 
 Recipes in, shopping list out.
 
-Keep your recipes and their ingredients in one place, tagged however suits you (soup, fish, quick…) so you can filter by tag. Tick the ones you're cooking this week and Grub Grab builds a combined shopping list, adding up the quantities (garlic from two recipes → 7 cloves). You can tick items off in the shop or share the list as text. Two people can share one household, so you both see the same recipes and the same list.
+Keep your recipes and their ingredients in one place, tagged however suits you (soup, fish, quick…) so you can filter by tag, with a one-tap link back to the page each recipe came from. Tick the ones you're cooking this week and Grub Grab builds a combined shopping list, adding up the quantities (garlic from two recipes → 7 cloves). You can tick items off in the shop or share the list as text. Two people can share one household, so you both see the same recipes and the same list.
 
 It's a React web app that installs to the home screen on both iPhone and Android, backed by a small serverless API on AWS.
 
@@ -84,6 +84,8 @@ When it finishes, open the printed `SiteUrl` on your phone:
 - **iPhone (Safari):** Share → *Add to Home Screen*
 - **Android (Chrome):** ⋮ → *Install app*
 
+Pull down from the top of any screen to refresh: it loads the other person's changes, and switches to a newly deployed version of the app if there is one.
+
 On first sign-in, the app asks whether to **join a household** with a code or **start a new one**. For two people, the first person starts one and opens **Settings**, which shows a 10-character invite code (e.g. `ABCDE-FGH23`). The second person signs in with their own Google account and enters that code on the welcome screen. Anyone can also switch household later under *Settings → Join a household*. Each account gets 5 join attempts per hour. **New code** in Settings replaces the code if it has leaked; people who already joined stay in.
 
 **Cost:** at household scale this is effectively free. Everything is pay-per-request, and the Cognito, Lambda and DynamoDB free tiers cover it.
@@ -100,7 +102,7 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 | POST | `/household` | start a household (returns the existing one if the user already has one) |
 | POST | `/household/join` | `{code}`, max 5 attempts per user per hour (429 after that) |
 | POST | `/household/invite` | replace the invite code; the old one stops working |
-| GET / POST | `/recipes` | list / create. A recipe is `{title, servings, notes, tags, ingredients}`; tags are lower-cased and de-duplicated, max 20 of 30 characters |
+| GET / POST | `/recipes` | list / create. A recipe is `{title, servings, notes, link, tags, ingredients}`; `link` must be an http(s) address; tags are lower-cased and de-duplicated, max 20 of 30 characters |
 | GET / PUT / DELETE | `/recipes/{id}` | |
 | GET | `/list` | shopping list items |
 | POST | `/list/generate` | `{recipeIds, mode: "replace" \| "append"}` |
