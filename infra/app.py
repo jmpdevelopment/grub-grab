@@ -5,7 +5,7 @@ from pathlib import Path
 
 import aws_cdk as cdk
 
-from stack import CertificateStack, GrubGrabStack, SiteDomain
+from stack import CertificateStack, GrubGrabStack, RedirectStack, SiteDomain, redirect_domains_from_context
 
 # Your deployment's settings (Google client ID, custom domain) live in settings.local.json, which is
 # git-ignored; copy settings.local.example.json to start. Anything passed with `-c key=value` wins.
@@ -29,6 +29,16 @@ if site_domain:
         env=cdk.Environment(account=account, region="us-east-1"),
         cross_region_references=True,
     ).certificate
+
+redirect_domains = redirect_domains_from_context(app, site_domain)
+if redirect_domains:
+    RedirectStack(
+        app,
+        "GrubGrabRedirects",
+        target=f"https://{site_domain.name}",
+        domains=redirect_domains,
+        env=cdk.Environment(account=account, region="us-east-1"),
+    )
 
 GrubGrabStack(
     app,

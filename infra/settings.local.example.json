@@ -10,5 +10,6 @@
   "aiModel": "claude-opus-5-5",
   "aiEffort": "low",
   "aiMonthlyLimit": 20,
-  "anthropicAwsWorkspaceId": ""
+  "anthropicAwsWorkspaceId": "",
+  "redirectDomains": []
 }

@@ -1,6 +1,7 @@
 """Assertions on the synthesised CloudFormation, covering the security settings."""
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -582,3 +583,90 @@ def test_requirements_pin_the_sdk_major():
     from stack import API_REQUIREMENTS
 
     assert "anthropic>=2.6,<3" in API_REQUIREMENTS.read_text()
+
+
+# ---- extra domains that redirect to the site ------------------------------------------------------
+
+
+def redirect_template() -> Template:
+    from stack import RedirectStack
+
+    app = cdk.App(context=BASE)
+    stack = RedirectStack(
+        app,
+        "TestRedirects",
+        target="https://grubgrab.example",
+        domains=[SiteDomain("redirect.example", "ZREDIRECT")],
+        env=cdk.Environment(account=ENV.account, region="us-east-1"),
+    )
+    return Template.from_stack(stack)
+
+
+def test_redirect_domains_get_a_certificate_and_dns_for_the_name_and_its_www():
+    t = redirect_template()
+    cert = only(t, "AWS::CertificateManager::Certificate")
+    assert cert["DomainName"] == "redirect.example" and cert["SubjectAlternativeNames"] == ["www.redirect.example"]
+    assert cert["ValidationMethod"] == "DNS"
+    assert {o["HostedZoneId"] for o in cert["DomainValidationOptions"]} == {"ZREDIRECT"}
+    records = [r["Properties"] for r in t.find_resources("AWS::Route53::RecordSet").values()]
+    assert sorted((r["Name"], r["Type"]) for r in records) == [
+        ("redirect.example.", "A"),
+        ("redirect.example.", "AAAA"),
+        ("www.redirect.example.", "A"),
+        ("www.redirect.example.", "AAAA"),
+    ]
+    assert all(r["HostedZoneId"] == "ZREDIRECT" and "AliasTarget" in r for r in records)
+
+
+def test_the_redirect_distribution_only_answers_with_the_redirect():
+    t = redirect_template()
+    config = only(t, "AWS::CloudFront::Distribution")["DistributionConfig"]
+    assert config["Aliases"] == ["redirect.example", "www.redirect.example"]
+    behaviour = config["DefaultCacheBehavior"]
+    assert behaviour["ViewerProtocolPolicy"] == "allow-all"  # http:// reaches the redirect in one hop
+    assert behaviour["CachePolicyId"] == "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"  # caching disabled
+    assert [a["EventType"] for a in behaviour["FunctionAssociations"]] == ["viewer-request"]
+    function = only(t, "AWS::CloudFront::Function")
+    assert function["FunctionConfig"]["Runtime"] == "cloudfront-js-2.0"
+    assert function["FunctionCode"].startswith('var TARGET = "https://grubgrab.example";')
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the CloudFront Function")
+@pytest.mark.parametrize(
+    "uri, querystring, location",
+    [
+        ("/", {}, "https://grubgrab.example/"),
+        ("/privacy.html", {}, "https://grubgrab.example/privacy.html"),
+        ("/", {"code": {"value": "abc"}, "state": {"value": "x"}}, "https://grubgrab.example/?code=abc&state=x"),
+        ("/a", {"t": {"value": "1", "multiValue": [{"value": "1"}, {"value": "2"}]}, "flag": {"value": ""}}, "https://grubgrab.example/a?t=1&t=2&flag"),
+    ],
+)
+def test_the_redirect_keeps_the_path_and_query(uri, querystring, location):
+    from stack import REDIRECT_FUNCTION
+
+    script = (
+        'var TARGET = "https://grubgrab.example";'
+        + REDIRECT_FUNCTION
+        + f"console.log(JSON.stringify(handler({{request: {{uri: {json.dumps(uri)}, querystring: {json.dumps(querystring)}}}}})));"
+    )
+    response = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+    assert response["statusCode"] == 301
+    assert response["headers"]["location"]["value"] == location
+
+
+def test_redirect_domain_settings_are_checked():
+    from stack import redirect_domains_from_context
+
+    site = SiteDomain("grubgrab.example", "ZSITE")
+    app = lambda **c: cdk.App(context=c)  # noqa: E731
+    assert redirect_domains_from_context(app(), site) == []
+    [d] = redirect_domains_from_context(app(redirectDomains=[{"domainName": " Redirect.Example. ", "hostedZoneId": "Z1"}]), site)
+    assert (d.name, d.zone_id) == ("redirect.example", "Z1")
+    with pytest.raises(ValueError, match="needs a domainName and a hostedZoneId"):
+        redirect_domains_from_context(app(redirectDomains=[{"domainName": "redirect.example"}]), site)
+    with pytest.raises(ValueError, match="need the site's own domainName"):
+        redirect_domains_from_context(app(redirectDomains=[{"domainName": "redirect.example", "hostedZoneId": "Z1"}]), None)
+
+
+def test_site_is_served_from_europe_and_north_america_edges_only(template):
+    assert only(template, "AWS::CloudFront::Distribution")["DistributionConfig"]["PriceClass"] == "PriceClass_100"

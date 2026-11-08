@@ -96,6 +96,14 @@ Find the zone ID with `aws route53 list-hosted-zones`. The deploy then adds a `G
 
 Changing the domain later is safe for your data, but home-screen installs are tied to the address, so they need re-adding from the new one.
 
+**Extra domains that redirect to it** (e.g. a Lithuanian name): put the domain's DNS in a Route 53 zone in the same account, then list it in `infra/settings.local.json`:
+
+```json
+"redirectDomains": [{"domainName": "example.lt", "hostedZoneId": "Z0123456789ABCDEFGHIJ"}]
+```
+
+The deploy adds a small `GrubGrabRedirects` stack in `us-east-1`: a certificate for the domain and its `www.`, a CloudFront distribution whose only job is a CloudFront Function answering `301` to the same path on the main domain (also straight from `http://`, in one hop), and the DNS records. It's separate from the site, so the site keeps one address for installed apps and sign-in. Its certificate is validated through DNS, so deploy once the registry publishes the domain's name servers.
+
 `deploy.sh` builds the web app, then runs `cdk deploy --all`. The stack:
 
 - serves the built app from S3 behind CloudFront

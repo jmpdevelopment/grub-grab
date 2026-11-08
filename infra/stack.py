@@ -397,6 +397,9 @@ class GrubGrabStack(Stack):
         distribution = cloudfront.Distribution(
             self,
             "Site",
+            # Europe and North America edges only: the users are in Europe, and only the app's static files
+            # are cached at the edge (never the API or anyone's data). Visitors elsewhere are served from these.
+            price_class=cloudfront.PriceClass.PRICE_CLASS_100,
             default_behavior=cloudfront.BehaviorOptions(
                 origin=origins.S3BucketOrigin.with_origin_access_control(site_bucket),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -534,3 +537,93 @@ class GrubGrabStack(Stack):
             secretsmanager.Secret.from_secret_name_v2(self, "AnthropicApiKey", ANTHROPIC_SECRET_NAME).grant_read(fn)
         else:
             raise ValueError(f"Unknown aiProvider {provider!r}: use 'anthropic-aws' or 'anthropic' (see api/src/grubgrab/ai).")
+
+
+# ---- extra domains that redirect to the site (e.g. a Lithuanian example.lt -> the main domain) ---------
+
+REDIRECT_FUNCTION = """
+function handler(event) {
+  var request = event.request;
+  var query = [];
+  for (var key in request.querystring) {
+    var entry = request.querystring[key];
+    var values = entry.multiValue ? entry.multiValue : [entry];
+    for (var i = 0; i < values.length; i++) {
+      query.push(values[i].value === '' ? key : key + '=' + values[i].value);
+    }
+  }
+  return {
+    statusCode: 301,
+    statusDescription: 'Moved Permanently',
+    headers: {
+      location: { value: TARGET + request.uri + (query.length ? '?' + query.join('&') : '') },
+      'cache-control': { value: 'max-age=3600' },
+    },
+  };
+}
+"""
+
+
+def redirect_domains_from_context(scope: Construct, site_domain: "SiteDomain | None") -> list[SiteDomain]:
+    """`redirectDomains` in settings.local.json: [{"domainName": "example.lt", "hostedZoneId": "Z..."}].
+    Each one (and its www.) permanently redirects to the site's own domain, keeping the path."""
+    entries = scope.node.try_get_context("redirectDomains") or []
+    domains = []
+    for entry in entries:
+        name = str(entry.get("domainName") or "").strip().lower().rstrip(".")
+        zone_id = str(entry.get("hostedZoneId") or "").strip()
+        if not name or not zone_id:
+            raise ValueError("Each redirectDomains entry needs a domainName and a hostedZoneId.")
+        domains.append(SiteDomain(name, zone_id))
+    if domains and not site_domain:
+        raise ValueError("redirectDomains need the site's own domainName to redirect to.")
+    return domains
+
+
+class RedirectStack(Stack):
+    """Extra domains (plus their www.) that permanently redirect to the site: a certificate, a tiny
+    CloudFront distribution whose only job is a CloudFront Function answering 301, and DNS records.
+    Deployed in us-east-1 next to its certificate; separate from the site, so it can't affect it."""
+
+    def __init__(self, scope: Construct, construct_id: str, *, target: str, domains: list[SiteDomain], **kwargs) -> None:
+        super().__init__(scope, construct_id, **kwargs)
+        zones = {d.name: route53.HostedZone.from_hosted_zone_attributes(self, f"Zone{i}", hosted_zone_id=d.zone_id, zone_name=d.name)
+                 for i, d in enumerate(domains)}
+        names = [n for d in domains for n in (d.name, f"www.{d.name}")]
+        certificate = acm.Certificate(
+            self,
+            "Certificate",
+            domain_name=names[0],
+            subject_alternative_names=names[1:],
+            validation=acm.CertificateValidation.from_dns_multi_zone(
+                {n: zones[n.removeprefix("www.")] for n in names}
+            ),
+        )
+        redirect = cloudfront.Function(
+            self,
+            "Redirect",
+            runtime=cloudfront.FunctionRuntime.JS_2_0,
+            comment=f"301 to {target}",
+            code=cloudfront.FunctionCode.from_inline(f"var TARGET = {json.dumps(target)};" + REDIRECT_FUNCTION),
+        )
+        distribution = cloudfront.Distribution(
+            self,
+            "Redirects",
+            comment=f"Redirects {', '.join(names)} to {target}",
+            domain_names=names,
+            certificate=certificate,
+            price_class=cloudfront.PriceClass.PRICE_CLASS_100,
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.HttpOrigin(target.removeprefix("https://")),  # never reached: the function answers
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.ALLOW_ALL,  # http:// goes there in one hop
+                cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                function_associations=[
+                    cloudfront.FunctionAssociation(function=redirect, event_type=cloudfront.FunctionEventType.VIEWER_REQUEST)
+                ],
+            ),
+        )
+        alias = route53.RecordTarget.from_alias(targets.CloudFrontTarget(distribution))
+        for i, name in enumerate(names):
+            zone = zones[name.removeprefix("www.")]
+            route53.ARecord(self, f"A{i}", zone=zone, record_name=name, target=alias)
+            route53.AaaaRecord(self, f"Aaaa{i}", zone=zone, record_name=name, target=alias)
