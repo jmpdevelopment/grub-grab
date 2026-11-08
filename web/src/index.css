@@ -222,3 +222,11 @@ body { overscroll-behavior-y: contain; } /* our pull replaces the browser's own 
 
 .btn.import { margin-top: 10px; width: 100%; }
 .field > .hint { margin: 8px 0 0; }
+
+/* ---- language picker ---- */
+.splash { position: relative; }
+.splash-lang { position: absolute; top: calc(var(--safe-top) + 12px); right: 16px; }
+.lang-picker {
+  font: inherit; font-size: 0.95rem; color: var(--text); background: var(--card);
+  border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; max-width: 100%;
+}

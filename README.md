@@ -132,15 +132,32 @@ Set `notifyEmail` in `infra/settings.local.json` to be emailed when someone asks
 
 **Region:** the app deploys to `eu-west-2` (London) whatever your AWS CLI's default region is. To use another region, set `"region"` in `infra/settings.local.json` (or pass `-c region=...`), and create the Google client secret and the OAuth URLs in that region too.
 
+## Languages
+
+The app speaks English, Polish and Lithuanian, with two separate settings:
+
+- **App language: per person.** Menus and messages. Picked from the flag drop-down on the sign-in screen or in Settings, and saved to the person's account, so it follows them to any device. Before they choose, it follows their browser/phone language, then their time zone (Warsaw → Polish, Vilnius → Lithuanian), then English. A mixed household can each use their own.
+- **Recipe language: per household.** What "Fill from link" writes new recipes and tags in, for everyone in the household, so names match and the shopping list adds them up (*bulvės* and *ziemniaki* wouldn't). It starts as the language of whoever created the household (English for older households) and anyone in it can change it in Settings.
+
+Recipes, ingredients and tags people type are never translated.
+
+How it fits together (`web/src/i18n/`):
+
+- `locales/en.ts` is the master list of every message. `pl.ts` and `lt.ts` must have exactly the same keys (TypeScript refuses to build otherwise), and `i18n.test.ts` checks that every translation keeps the same `{placeholders}` and has every plural form the language needs (Polish and Lithuanian have three or four).
+- The API sends a stable `code` (and `params`) with each error, e.g. `{"error": "Invite code not found", "code": "invite_code_not_found"}`, and the app shows `error.<code>` in the person's language. `api/tests/test_error_codes.py` fails if the API can send a code that has no translation.
+- **To add a language:** copy `locales/en.ts` to `locales/<code>.ts` and translate it, add one line to `languages.ts` (code, name, flag, time zones), and add the language and its starter tags to `LANGUAGES` / `SUGGESTED_TAGS` in `api/src/grubgrab/ai/recipe.py`. The tests then check the rest.
+
 ## API
 
-Every route needs a Cognito access token (`Authorization: Bearer …`) and is scoped to the caller's household. Until the caller has started or joined a household, every route except the three household ones returns `409`.
+Every route needs a Cognito access token (`Authorization: Bearer …`) and is scoped to the caller's household. Errors are `{error, code, params}`: English text plus a stable code the app translates. Until the caller has started or joined a household, every route except the three household ones returns `409`.
 
 | Method | Path | |
 |---|---|---|
 | DELETE | `/me` | delete your account: your sign-in, profile and sign-up request, plus your household's recipes, list and invite code if nobody else is in it |
+| PATCH | `/me` | `{language}`: save this person's app language to their account (`en`, `pl` or `lt`) |
+| PUT | `/household/recipe-language` | `{language}`: what "Fill from link" writes in, for the whole household |
 | GET | `/me` | household id + invite code, or both `null` for a new user who hasn't started or joined one |
-| POST | `/household` | start a household (returns the existing one if the user already has one) |
+| POST | `/household` | `{language}`: start a household with that recipe language (returns the existing one if the user already has one) |
 | GET | `/admin/requests` | admins only: pending sign-up requests |
 | POST | `/admin/requests/{username}/approve` · `/decline` | admins only |
 | POST | `/admin/requests/decline-pending` | admins only: decline everyone waiting |

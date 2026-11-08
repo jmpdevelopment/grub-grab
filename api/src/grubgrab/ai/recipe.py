@@ -13,34 +13,51 @@ You read a recipe web page and turn it into a shopping-friendly recipe for a hou
 
 Fetch the page at the link the user gives, then fill in the answer:
 - found: false if the page has no recipe (or could not be read); then leave the other fields empty.
-- title: the dish's name in English, short and natural (e.g. "Zurek soup", "Chicken curry").
+- Write the title, ingredient names and tags in the language the request asks for, translating from the
+  page's language when they differ.
+- title: the dish's name, short and natural (e.g. "Zurek soup", "Chicken curry").
 - servings: the number of servings or portions if the page states one, otherwise null.
 - ingredients: every ingredient the cook needs to buy or have, in the page's order, once each.
-  - name: the ingredient in English, singular or plural as a shopper would say it, without the amount
+  - name: the ingredient, singular or plural as a shopper would say it, without the amount
     (e.g. "potatoes", "olive oil", "garlic"). Keep a short qualifier only when it matters when shopping
     (e.g. "smoked paprika", "chicken thighs").
   - quantity: a number, converting fractions to decimals ("1/2" -> 0.5, "1 1/2" -> 1.5). If a range is
     given, use the larger number. null when there is no amount ("salt to taste", "oil for frying").
-  - unit: one of g, kg, ml, l, tsp, tbsp, cloves, cans, pinch, bunch, or "" for countable items
-    ("2 onions" -> quantity 2, unit ""). Convert spoon and cup measures in other languages to these
-    (a Polish "łyżka" is tbsp, "łyżeczka" is tsp, "szklanka" is a glass of about 250 ml).
-  - Translate from the page's language into English. Do not invent ingredients that are not on the page,
-    and skip equipment, garnish suggestions and serving ideas that are not part of the recipe.
-- tags: 1 to 4 short lower-case labels for finding the recipe later. Give its main ingredient (one of
-  meat, chicken, fish, vegetarian) and, when one fits, the kind of dish (e.g. soup, pasta, salad,
-  stir fry, wraps). Prefer the household's existing tags, listed with the link, over new words for the
-  same thing; only add a new tag when none of them fits.
+  - unit: always write g, kg, ml, l, tsp and tbsp as exactly these codes, in every language (the app adds
+    amounts up by them): convert spoon and cup measures to them (a Polish "łyżka" or Lithuanian "šaukštas"
+    is tbsp, "łyżeczka" or "šaukštelis" is tsp, a glass/"szklanka"/"stiklinė" is about 250 ml). Other units
+    (cloves, cans, a pinch, a bunch) are short words in the requested language. Use "" for countable items
+    ("2 onions" -> quantity 2, unit "").
+  - Do not invent ingredients that are not on the page, and skip equipment, garnish suggestions and
+    serving ideas that are not part of the recipe.
+- tags: 1 to 4 short lower-case labels for finding the recipe later: its main ingredient (meat, chicken,
+  fish or vegetarian) and, when one fits, the kind of dish (soup, pasta, salad, stir fry, wraps, ...).
+  Prefer the household's existing tags, listed with the link, over new words for the same thing; only
+  add a new tag, in the requested language, when none of them fits.
 """
 
-SUGGESTED_TAGS = ["meat", "chicken", "fish", "vegetarian", "soup", "pasta", "salad", "quick"]
+# The app's languages (web/src/i18n/languages.ts) and the starter tags for a household with none yet,
+# matching "tags.suggested" in web/src/i18n/locales.
+LANGUAGES = {"en": "English", "pl": "Polish", "lt": "Lithuanian"}
+SUGGESTED_TAGS = {
+    "en": ["meat", "chicken", "fish", "vegetarian", "soup", "pasta", "salad", "quick"],
+    "pl": ["mięso", "kurczak", "ryba", "wegetariańskie", "zupa", "makaron", "sałatka", "szybkie"],
+    "lt": ["mėsa", "vištiena", "žuvis", "vegetariška", "sriuba", "makaronai", "salotos", "greita"],
+}
 _MAX_TAGS = 5
 _MAX_KNOWN_TAGS = 50
 
 
-def request_text(link: str, known_tags: list[str]) -> str:
-    """The user turn every provider sends: the link, plus the tags this household already uses."""
-    tags = sorted({t for t in known_tags if t})[:_MAX_KNOWN_TAGS] or SUGGESTED_TAGS
-    return f"Recipe page: {link}\nThe household's existing tags: {', '.join(tags)}"
+def language(code) -> str:
+    """The import language: one of LANGUAGES, English if missing or unknown."""
+    return code if code in LANGUAGES else "en"
+
+
+def request_text(link: str, known_tags: list[str], lang: str = "en") -> str:
+    """The user turn every provider sends: the link, the language to write in, and the household's tags."""
+    lang = language(lang)
+    tags = sorted({t for t in known_tags if t})[:_MAX_KNOWN_TAGS] or SUGGESTED_TAGS[lang]
+    return f"Recipe page: {link}\nWrite the recipe in: {LANGUAGES[lang]}\nThe household's existing tags: {', '.join(tags)}"
 
 RECIPE_SCHEMA: dict = {
     "type": "object",
@@ -69,7 +86,12 @@ RECIPE_SCHEMA: dict = {
 
 
 class ExtractionError(Exception):
-    """Something the person should be told, e.g. the page has no recipe. The message is shown in the app."""
+    """Something the person should be told, e.g. the page has no recipe. `code` lets the app show it in the
+    person's language ("error.<code>" in web/src/i18n/locales); the message is the English text."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 # Defensive limits: the app's own validation applies too, but an AI answer is never trusted blindly.
@@ -96,7 +118,7 @@ def _text(value, limit: int = _MAX_TEXT) -> str:
 def to_draft(answer: dict, link: str) -> dict:
     """Check and tidy a provider's answer into a recipe draft for the editor (never saved by itself)."""
     if not isinstance(answer, dict) or not answer.get("found"):
-        raise ExtractionError("Couldn't find a recipe on that page.")
+        raise ExtractionError("no_recipe", "Couldn't find a recipe on that page.")
     ingredients = []
     for raw in answer.get("ingredients") or []:
         if not isinstance(raw, dict) or not _text(raw.get("name")):
@@ -105,7 +127,7 @@ def to_draft(answer: dict, link: str) -> dict:
         if len(ingredients) == _MAX_INGREDIENTS:
             break
     if not ingredients:
-        raise ExtractionError("Couldn't find any ingredients on that page.")
+        raise ExtractionError("no_ingredients", "Couldn't find any ingredients on that page.")
     tags: list[str] = []
     for raw in answer.get("tags") or []:
         tag = _text(raw, 30).lower()

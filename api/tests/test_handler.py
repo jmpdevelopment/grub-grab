@@ -87,7 +87,7 @@ class TestEnvelope:
     def test_unauthenticated(self, store, evt):
         resp = handle(evt, store)
         assert resp["statusCode"] == 401
-        assert json.loads(resp["body"]) == {"error": "Not signed in"}
+        assert json.loads(resp["body"]) == {"error": "Not signed in", "code": "not_signed_in", "params": {}}
 
     def test_unknown_route(self, store):
         assert error(store, "GET /nope") == (404, "No route for GET /nope")
@@ -136,6 +136,41 @@ class TestEnvelope:
 
 
 # ---- households ----------------------------------------------------------------------
+
+
+class TestLanguages:
+    def test_each_person_keeps_their_own_app_language_on_their_account(self, store):
+        assert "language" not in call(store, "GET /me", sub="alice")[1]
+        assert call(store, "PATCH /me", sub="alice", body={"language": "lt"}) == (204, None)
+        call(store, "PATCH /me", sub="bob", body={"language": "pl"})
+        assert call(store, "GET /me", sub="alice")[1]["language"] == "lt"
+        assert call(store, "GET /me", sub="bob")[1]["language"] == "pl"
+        call(store, "PATCH /me", sub="alice", body={"language": "en"})
+        assert call(store, "GET /me", sub="alice")[1]["language"] == "en"
+
+    def test_works_before_joining_a_household(self, store):
+        assert call(store, "PATCH /me", sub="carol", body={"language": "pl"})[0] == 204
+        assert call(store, "GET /me", sub="carol")[1] == {"householdId": None, "inviteCode": None, "language": "pl"}
+
+    def test_a_new_household_takes_its_creators_language_and_anyone_in_it_can_change_it(self, store):
+        status, started = call(store, "POST /household", sub="carol", body={"language": "lt"})
+        assert status == 200 and started["recipeLanguage"] == "lt"
+        call(store, "POST /household/join", sub="dan", body={"code": started["inviteCode"]})
+        status, changed = call(store, "PUT /household/recipe-language", sub="dan", body={"language": "pl"})
+        assert status == 200 and changed["recipeLanguage"] == "pl"
+        assert call(store, "GET /me", sub="carol")[1]["recipeLanguage"] == "pl"  # shared by the household
+        assert call(store, "POST /household", sub="erin")[1]["recipeLanguage"] == "en"  # no language sent
+
+    @pytest.mark.parametrize("body", [{}, {"language": "de"}, {"language": 5}])
+    def test_only_languages_the_app_speaks(self, store, body):
+        assert error(store, "PATCH /me", body=body)[0] == 400
+        assert error(store, "PUT /household/recipe-language", body=body) == (400, f"Unknown language {str(body.get('language'))[:10]!r}")
+        assert call(store, "POST /household", sub="frank", body={**body, "language": body.get("language", "xx")})[0] == 400
+
+    def test_settings_go_when_the_account_does(self, store):
+        call(store, "PATCH /me", sub="alice", body={"language": "lt"})
+        store.delete_user_data("alice", "Google_alice")
+        assert store.get_user_language("alice") is None
 
 
 class TestHouseholds:
@@ -571,7 +606,7 @@ class TestAdmin:
             ("POST /admin/requests/decline-pending", None),
         ]:
             status, body = admin_call(requests, route, groups=groups, path=path)
-            assert (status, body) == (403, {"error": "Only admins can do that"})
+            assert (status, body) == (403, {"error": "Only admins can do that", "code": "admins_only", "params": {}})
         _, me = admin_call(requests, "GET /me", groups=groups)
         assert "admin" not in me and "pendingRequests" not in me
         assert len(requests.access_requests()) == 2  # nothing changed
@@ -590,9 +625,9 @@ class TestAdmin:
     def test_unknown_request_and_route(self, requests):
         assert admin_call(requests, "POST /admin/requests/{username}/approve", path={"username": "Google_x"}) == (
             404,
-            {"error": "Request not found"},
+            {"error": "Request not found", "code": "request_not_found", "params": {}},
         )
-        assert admin_call(requests, "GET /admin/nope") == (404, {"error": "No route for GET /admin/nope"})
+        assert admin_call(requests, "GET /admin/nope") == (404, {"error": "No route for GET /admin/nope", "code": "bad_request", "params": {}})
 
     def test_admin_without_a_household_can_still_review(self, requests):
         status, me = admin_call(requests, "GET /me", sub="newadmin")
@@ -658,7 +693,10 @@ class TestDeleteAccount:
         assert self.delete_me(store, "nobody", "Google_nobody") == (200, {"deleted": True, "householdDeleted": False})
 
     def test_needs_the_username_from_the_token(self, store, pool):
-        assert self.delete_me(store, "alice", None) == (400, {"error": "Can't tell which account to delete"})
+        assert self.delete_me(store, "alice", None) == (
+            400,
+            {"error": "Can't tell which account to delete", "code": "account_unknown", "params": {}},
+        )
         assert call(store, "GET /me", sub="alice")[1]["householdId"]  # nothing deleted
 
 
@@ -673,14 +711,14 @@ class TestRecipeImport:
         jobs = []
         monkeypatch.setenv("AI_PROVIDER", "anthropic")
         monkeypatch.setenv("AI_MONTHLY_LIMIT", "2")
-        monkeypatch.setattr(handler, "_start_import_worker", lambda hh, job, link: jobs.append((hh, job, link)))
+        monkeypatch.setattr(handler, "_start_import_worker", lambda hh, job, link, lang: jobs.append((hh, job, link, lang)))
         return jobs
 
     def test_starts_a_job_and_reports_it_as_pending(self, store, started):
         status, body = call(store, "POST /recipes/import", body={"link": " https://example.com/soup "})
         assert status == 202 and body["remaining"] == 1
         hh = store.household_for("alice")
-        assert started == [(hh, body["jobId"], "https://example.com/soup")]
+        assert started == [(hh, body["jobId"], "https://example.com/soup", "en")]
         assert call(store, "GET /recipes/import/{id}", path={"id": body["jobId"]}) == (200, {"status": "pending"})
         assert call(store, "GET /recipes")[1] == []  # nothing saved: the app shows the result for review
 
@@ -690,12 +728,31 @@ class TestRecipeImport:
         hh = store.household_for("alice")
         draft = {"title": "Soup", "servings": None, "link": "https://e.com/a", "ingredients": [{"name": "leek", "quantity": 1.5, "unit": ""}]}
         store.finish_import_job(hh, ok["jobId"], recipe=draft)
-        store.finish_import_job(hh, bad["jobId"], error="Couldn't find a recipe on that page.")
+        store.finish_import_job(hh, bad["jobId"], error="Couldn't find a recipe on that page.", error_code="no_recipe")
         assert call(store, "GET /recipes/import/{id}", path={"id": ok["jobId"]}) == (200, {"status": "done", "recipe": draft})
         assert call(store, "GET /recipes/import/{id}", path={"id": bad["jobId"]}) == (
             200,
-            {"status": "failed", "error": "Couldn't find a recipe on that page."},
+            {"status": "failed", "error": "Couldn't find a recipe on that page.", "errorCode": "no_recipe"},
         )
+
+    def test_the_recipe_is_written_in_the_households_recipe_language(self, store, started):
+        call(store, "POST /recipes/import", body={"link": "https://e.com", "language": "lt"})  # what the app sends is ignored
+        assert started[-1][3] == "en"  # households from before recipe languages: English
+        call(store, "PUT /household/recipe-language", body={"language": "pl"})
+        call(store, "POST /recipes/import", sub="alice", body={"link": "https://e.com"})
+        assert started[-1][3] == "pl"
+
+    def test_every_error_carries_a_code_and_values_for_translation(self, store, started):
+        resp = handle(event("POST /household/join", body={"code": "abc"}), store)
+        assert json.loads(resp["body"]) == {
+            "error": "Invite codes are 10 characters",
+            "code": "invite_code_length",
+            "params": {"length": 10},
+        }
+        resp = handle(event("POST /recipes", body={"title": "x" * 201}), store)
+        assert json.loads(resp["body"])["params"] == {"field": "title", "max": 200}
+        resp = handle(event("POST /recipes", body={"title": "Soup", "ingredients": [{"name": 5}]}), store)
+        assert json.loads(resp["body"])["params"] == {"field": "ingredient_name"}
 
     def test_jobs_are_private_to_the_household(self, store, started):
         _, body = call(store, "POST /recipes/import", body={"link": "https://e.com/a"})
@@ -746,12 +803,12 @@ class TestRecipeImport:
 
         client = boto3.client("lambda")
         stub = Stubber(client)
-        payload = json.dumps({"householdId": "h1", "jobId": "j1", "link": "https://e.com"}).encode()
+        payload = json.dumps({"householdId": "h1", "jobId": "j1", "link": "https://e.com", "language": "pl"}).encode()
         stub.add_response(
             "invoke", {"StatusCode": 202}, {"FunctionName": "import-worker", "InvocationType": "Event", "Payload": payload}
         )
         monkeypatch.setenv("IMPORT_WORKER_NAME", "import-worker")
         monkeypatch.setattr(handler.boto3, "client", lambda service: client)
         with stub:
-            handler._start_import_worker("h1", "j1", "https://e.com")
+            handler._start_import_worker("h1", "j1", "https://e.com", "pl")
         stub.assert_no_pending_responses()

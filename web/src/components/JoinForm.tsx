@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useI18n } from '../i18n'
 import { INVITE_LENGTH, normaliseInviteCode } from '../lib/invite'
 
 interface Props {
@@ -9,6 +10,7 @@ interface Props {
 
 /** Invite-code box and Join button. Accepts codes typed in any format ("abcde fgh23"). */
 export function JoinForm({ onJoin, joinedMessage }: Props) {
+  const { t, errorText } = useI18n()
   const [code, setCode] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -21,7 +23,7 @@ export function JoinForm({ onJoin, joinedMessage }: Props) {
       setCode('')
       if (joinedMessage) setMsg(joinedMessage)
     } catch (e) {
-      setMsg((e as Error).message)
+      setMsg(errorText(e))
     } finally {
       setBusy(false)
     }
@@ -34,14 +36,14 @@ export function JoinForm({ onJoin, joinedMessage }: Props) {
           value={code}
           onChange={(e) => setCode(e.target.value.toUpperCase())}
           placeholder="ABCDE-FGH23"
-          aria-label="Invite code"
+          aria-label={t('join.codeLabel')}
           maxLength={INVITE_LENGTH + 4}
           autoCapitalize="characters"
           autoComplete="off"
           spellCheck={false}
         />
         <button className="btn" disabled={normaliseInviteCode(code).length !== INVITE_LENGTH || busy} onClick={join}>
-          Join
+          {t('join.button')}
         </button>
       </div>
       {msg && <p className="hint">{msg}</p>}

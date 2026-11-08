@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AccessRequests } from './components/AccessRequests'
 import { HouseholdSetup } from './components/HouseholdSetup'
+import { LanguagePicker } from './components/LanguagePicker'
 import { PullToRefresh } from './components/PullToRefresh'
 import { ListView } from './components/ListView'
 import { RecipeEditor } from './components/RecipeEditor'
@@ -10,6 +11,7 @@ import { updateApp, watchForAppUpdates } from './lib/appUpdate'
 import { completeSignIn, currentEmail, forgetSession, getAccessToken, SignInNotice, signIn, signOut } from './lib/auth'
 import { AuthRequiredError, CloudBackend, LocalBackend } from './lib/backend'
 import { loadConfig, type AppConfig } from './lib/config'
+import { I18nProvider, isLang, useI18n, type MessageKey } from './i18n'
 import type { Backend, Household, ListItem, Recipe } from './types'
 
 type Tab = 'recipes' | 'list' | 'settings'
@@ -23,16 +25,33 @@ const FAILED = Symbol('failed')
 const byTitle = (a: Recipe, b: Recipe) => a.title.localeCompare(b.title)
 
 export default function App() {
+  return (
+    <I18nProvider>
+      <GrubGrab />
+    </I18nProvider>
+  )
+}
+
+function GrubGrab() {
+  const { t, errorText, lang, setLang } = useI18n()
   const [boot, setBoot] = useState<Boot>({ state: 'loading' })
   const [tab, setTab] = useState<Tab>('recipes')
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [items, setItems] = useState<ListItem[]>([])
   const [household, setHousehold] = useState<Household | null>(null)
   const [editing, setEditing] = useState<Recipe | null | 'new'>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  // Kept as the error / message key (not text) so they show in whatever language is picked.
+  const [error, setError] = useState<unknown>(null)
+  const [notice, setNotice] = useState<MessageKey | null>(null)
   const [loaded, setLoaded] = useState(false) // first recipes + list have arrived
   const [refreshes, setRefreshes] = useState(0) // tells panels that load their own data to reload
+  // The app language saved on the signed-in account (null until /me has loaded): it follows them across
+  // devices. Kept in refs so changing language doesn't re-run the data loading.
+  const accountLang = useRef<string | null>(null)
+  const langRef = useRef(lang)
+  useEffect(() => {
+    langRef.current = lang
+  }, [lang])
 
   // ---- startup -------------------------------------------------------------
   useEffect(() => {
@@ -43,8 +62,8 @@ export default function App() {
       try {
         await completeSignIn(cfg)
       } catch (e) {
-        if (e instanceof SignInNotice) setNotice(e.message)
-        else setError((e as Error).message)
+        if (e instanceof SignInNotice) setNotice(e.key)
+        else setError(e)
       }
       if (!(await getAccessToken(cfg))) return setBoot({ state: 'signin', cfg })
       setBoot({ state: 'ready', backend: new CloudBackend(cfg), cfg })
@@ -63,7 +82,7 @@ export default function App() {
       } catch (e) {
         // Only the cloud backend raises AuthRequiredError, and it only exists when cfg is set.
         if (e instanceof AuthRequiredError) setBoot({ state: 'signin', cfg: cfg! })
-        else setError((e as Error).message)
+        else setError(e)
         return FAILED
       }
     },
@@ -74,6 +93,15 @@ export default function App() {
     if (!backend) return
     await guard(async () => {
       const h = await backend.me()
+      if (backend.mode === 'cloud' && accountLang.current === null) {
+        if (isLang(h.language)) {
+          accountLang.current = h.language
+          setLang(h.language) // their account's choice wins over this device's
+        } else {
+          accountLang.current = langRef.current // a new account starts with whatever they're using now
+          backend.saveLanguage(langRef.current).catch(() => {})
+        }
+      }
       setHousehold(h)
       setRefreshes((n) => n + 1)
       if (!h.householdId) return // new user: the welcome screen asks them to start or join one first
@@ -82,7 +110,14 @@ export default function App() {
       setItems(l)
       setLoaded(true)
     })
-  }, [backend, guard])
+  }, [backend, guard, setLang])
+
+  // Picking a language while signed in saves it to the account (best effort: it still applies here).
+  useEffect(() => {
+    if (backend?.mode !== 'cloud' || accountLang.current === null || accountLang.current === lang) return
+    accountLang.current = lang
+    backend.saveLanguage(lang).catch(() => {})
+  }, [backend, lang])
 
   useEffect(() => {
     refresh()
@@ -114,22 +149,25 @@ export default function App() {
   }, [backend, tab])
 
   // ---- render ---------------------------------------------------------------
-  if (boot.state === 'loading') return <div className="splash">Loading…</div>
+  if (boot.state === 'loading') return <div className="splash">{t('app.loading')}</div>
 
   if (boot.state === 'signin')
     return (
       <div className="splash">
+        <div className="splash-lang">
+          <LanguagePicker />
+        </div>
         <img src="/icon.svg" alt="" width={96} height={96} />
         <h1>Grub Grab</h1>
-        <p className="muted">Recipes in, shopping list out.</p>
-        {notice && <p className="notice">{notice}</p>}
-        {error && <p className="error">{error}</p>}
+        <p className="muted">{t('app.tagline')}</p>
+        {notice && <p className="notice">{t(notice)}</p>}
+        {error !== null && <p className="error">{errorText(error)}</p>}
         <button className="btn google" onClick={() => signIn(boot.cfg)}>
-          Continue with Google
+          {t('signin.google')}
         </button>
         <p className="legal">
           <a href="/privacy.html" target="_blank" rel="noopener">
-            Privacy policy
+            {t('app.privacy')}
           </a>
         </p>
       </div>
@@ -139,7 +177,7 @@ export default function App() {
 
   // Wait for /me before showing anything, so a new user never sees an empty app flash before the welcome screen.
   // (If /me fails, fall through to the app, which shows the error banner.)
-  if (household === null && !error) return <div className="splash">Loading…</div>
+  if (household === null && error === null) return <div className="splash">{t('app.loading')}</div>
 
   if (household && !household.householdId)
     return (
@@ -149,7 +187,7 @@ export default function App() {
             email={currentEmail()}
             onSignOut={() => void signOut(cfg!)} // only cloud users lack a household, and cloud mode always has cfg
             onStart={async () => {
-              setHousehold(await b.createHousehold())
+              setHousehold(await b.createHousehold(lang)) // its recipe language starts as theirs
               await refresh()
             }}
             onJoin={async (code) => {
@@ -168,6 +206,7 @@ export default function App() {
         recipe={recipe}
         knownTags={[...new Set(recipes.flatMap((r) => r.tags ?? []))].sort()}
         onImport={cfg?.aiImport && b.mode === 'cloud' ? b.importRecipe : undefined}
+        recipeLanguage={isLang(household?.recipeLanguage) ? household.recipeLanguage : undefined}
         onCancel={() => setEditing(null)}
         onSave={async (input) => {
           const saved = recipe ? await b.updateRecipe(recipe.id, input) : await b.createRecipe(input)
@@ -194,9 +233,9 @@ export default function App() {
   return (
     <div className="app">
       <PullToRefresh onRefresh={pullRefresh} />
-      {error && (
+      {error !== null && (
         <button className="banner" role="alert" onClick={() => setError(null)}>
-          {error}
+          {errorText(error)}
         </button>
       )}
       <main>
@@ -253,7 +292,7 @@ export default function App() {
                     setRecipes([])
                     setItems([])
                     setHousehold(null)
-                    setNotice('Your account and its data have been deleted.')
+                    setNotice('signin.accountDeleted')
                     setBoot({ state: 'signin', cfg: cfg! })
                   }
                 : undefined
@@ -270,6 +309,14 @@ export default function App() {
               )
             }
             onRotate={async () => setHousehold(await b.rotateInvite())}
+            onRecipeLanguage={
+              b.mode === 'cloud'
+                ? async (language) => {
+                    const updated = await guard(() => b.setRecipeLanguage(language))
+                    if (updated !== FAILED) setHousehold((h) => ({ ...h!, ...updated }))
+                  }
+                : undefined
+            }
             onJoin={async (code) => {
               setHousehold(await b.joinHousehold(code))
               await refresh()
@@ -280,13 +327,18 @@ export default function App() {
 
       <nav className="tabs">
         <button className={tab === 'recipes' ? 'active' : ''} onClick={() => setTab('recipes')}>
-          <span aria-hidden>📖</span>Recipes
+          <span aria-hidden>📖</span>
+          {t('tab.recipes')}
         </button>
         <button className={tab === 'list' ? 'active' : ''} onClick={() => setTab('list')}>
-          <span aria-hidden>🛒</span>List{toBuy ? ` (${toBuy})` : ''}
+          <span aria-hidden>🛒</span>
+          {t('tab.list')}
+          {toBuy ? ` (${toBuy})` : ''}
         </button>
         <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
-          <span aria-hidden>⚙️</span>Settings{household?.pendingRequests ? ` (${household.pendingRequests})` : ''}
+          <span aria-hidden>⚙️</span>
+          {t('tab.settings')}
+          {household?.pendingRequests ? ` (${household.pendingRequests})` : ''}
         </button>
       </nav>
     </div>

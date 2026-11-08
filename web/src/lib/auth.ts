@@ -1,5 +1,7 @@
 // Minimal Cognito sign-in using the OAuth authorization-code flow with PKCE.
 // Google is the only identity provider, so we skip Cognito's page and go straight to Google.
+import { AppError } from '../i18n/errors'
+import { en } from '../i18n/locales/en'
 import type { AppConfig } from './config'
 
 const TOKENS_KEY = 'gg.tokens'
@@ -14,14 +16,22 @@ interface Tokens {
 
 const redirectUri = () => `${window.location.origin}/`
 
+type NoticeKey = 'signin.requestSent' | 'signin.notApproved'
+
 /** Not a failure: something to tell the person on the sign-in screen (e.g. their request is waiting). */
-export class SignInNotice extends Error {}
+export class SignInNotice extends Error {
+  readonly key: NoticeKey
+  constructor(key: NoticeKey) {
+    super(en[key]) // English for logs; the app shows `key` in the person's language
+    this.key = key
+  }
+}
 
 // Codes raised by the sign-up approval trigger (api/src/grubgrab/signup.py). Cognito passes them back as
 // "?error=...&error_description=PreSignUp failed with error ACCESS_PENDING."
-const SIGN_UP_NOTICES: Record<string, string> = {
-  ACCESS_PENDING: "Thanks! Your request to join has been sent. You'll be able to sign in once it's approved.",
-  ACCESS_DECLINED: "This Google account hasn't been approved for Grub Grab.",
+const SIGN_UP_NOTICES: Record<string, NoticeKey> = {
+  ACCESS_PENDING: 'signin.requestSent',
+  ACCESS_DECLINED: 'signin.notApproved',
 }
 
 function b64url(bytes: ArrayBuffer | Uint8Array): string {
@@ -47,7 +57,7 @@ async function tokenRequest(cfg: AppConfig, params: Record<string, string>): Pro
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: cfg.clientId, ...params }),
   })
-  if (!res.ok) throw new Error(`Sign-in failed (${res.status})`)
+  if (!res.ok) throw new AppError('signin_failed', { detail: res.status }, `Sign-in failed (${res.status})`)
   const data = await res.json()
   return {
     idToken: data.id_token,
@@ -100,7 +110,7 @@ export async function completeSignIn(cfg: AppConfig): Promise<void> {
     const description = params.get('error_description') ?? ''
     const notice = SIGN_UP_NOTICES[description.match(/\bACCESS_[A-Z]+\b/)?.[0] ?? '']
     if (notice) throw new SignInNotice(notice)
-    throw new Error(`Sign-in failed: ${description || error}`)
+    throw new AppError('signin_failed', { detail: description || error }, `Sign-in failed: ${description || error}`)
   }
   const code = params.get('code')
   if (!code) return

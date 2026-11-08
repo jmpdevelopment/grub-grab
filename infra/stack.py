@@ -452,10 +452,11 @@ class GrubGrabStack(Stack):
         )
         integration = integrations.HttpLambdaIntegration("ApiIntegration", fn)
         routes = {
-            "/me": [apigw.HttpMethod.GET, apigw.HttpMethod.DELETE],
+            "/me": [apigw.HttpMethod.GET, apigw.HttpMethod.PATCH, apigw.HttpMethod.DELETE],
             "/household": [apigw.HttpMethod.POST],
             "/household/join": [apigw.HttpMethod.POST],
             "/household/invite": [apigw.HttpMethod.POST],
+            "/household/recipe-language": [apigw.HttpMethod.PUT],
             "/recipes": [apigw.HttpMethod.GET, apigw.HttpMethod.POST],
             "/recipes/import": [apigw.HttpMethod.POST],
             "/recipes/import/{id}": [apigw.HttpMethod.GET],

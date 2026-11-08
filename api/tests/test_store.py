@@ -92,7 +92,7 @@ class TestHouseholds:
     def test_parallel_first_request_uses_existing_household(self, table):
         Store(table).table.put_item(Item={"PK": "HH#theirs", "SK": "META", "inviteCode": "ZZZZZZ"})
         s = Store(LateProfileTable(table, "theirs"), codes("LOSERCODE2"))
-        assert s.create_household("alice") == {"householdId": "theirs", "inviteCode": "ZZZZZZ"}
+        assert s.create_household("alice") == {"householdId": "theirs", "inviteCode": "ZZZZZZ", "recipeLanguage": "en"}
         # The losing request cleans up the household it built: no orphan META, and its code doesn't work.
         metas = [i for i in table.scan()["Items"] if i["SK"] == "META"]
         assert [m["PK"] for m in metas] == ["HH#theirs"]
@@ -120,7 +120,7 @@ class TestHouseholds:
         assert seen == [created] and created["inviteCode"] == "FRESHCODE2"
 
     def test_household_without_meta(self, store):
-        assert store.get_household("missing") == {"householdId": "missing", "inviteCode": None}
+        assert store.get_household("missing") == {"householdId": "missing", "inviteCode": None, "recipeLanguage": "en"}
 
     def test_join(self, store):
         hh = store.create_household("alice")
@@ -143,7 +143,7 @@ class TestRotateInvite:
         s = Store(table, codes("OLDOLDOLD2", "NEWNEWNEW2"))
         hh = s.create_household("alice")
         rotated = s.rotate_invite(hh["householdId"])
-        assert rotated == {"householdId": hh["householdId"], "inviteCode": "NEWNEWNEW2"}
+        assert rotated == {"householdId": hh["householdId"], "inviteCode": "NEWNEWNEW2", "recipeLanguage": "en"}
         assert s.get_household(hh["householdId"])["inviteCode"] == "NEWNEWNEW2"
         assert s.join_household("bob", "OLDOLDOLD2") is None
         assert s.join_household("bob", "NEWNEWNEW2")["householdId"] == hh["householdId"]

@@ -94,11 +94,11 @@ class AnthropicExtractor:
             key = _api_key_from_secret(os.environ["ANTHROPIC_SECRET_NAME"])
         except (ClientError, BotoCoreError) as exc:  # e.g. the key hasn't been stored yet
             log.error("Couldn't read the Anthropic API key: %s", exc)
-            raise ExtractionError("Recipe import isn't working right now (server setup). Add the recipe by hand.") from exc
+            raise ExtractionError("import_setup", "Recipe import isn't working right now (server setup). Add the recipe by hand.") from exc
         return cls._configured(anthropic.Anthropic(api_key=key, timeout=_TIMEOUT_SECONDS, max_retries=0))
 
-    def extract(self, link: str, known_tags: list[str]) -> dict:
-        messages: list = [{"role": "user", "content": request_text(link, known_tags)}]
+    def extract(self, link: str, known_tags: list[str], language: str = "en") -> dict:
+        messages: list = [{"role": "user", "content": request_text(link, known_tags, language)}]
         responses: list = []
         started = time.monotonic()
         try:
@@ -119,24 +119,24 @@ class AnthropicExtractor:
                     break
                 messages.append({"role": "assistant", "content": response.content})
         except anthropic.APITimeoutError as exc:
-            raise ExtractionError("Reading that page took too long. Try again, or add the recipe by hand.") from exc
+            raise ExtractionError("import_timeout", "Reading that page took too long. Try again, or add the recipe by hand.") from exc
         except anthropic.RateLimitError as exc:
-            raise ExtractionError("Recipe import is busy right now. Try again in a minute.") from exc
+            raise ExtractionError("import_busy", "Recipe import is busy right now. Try again in a minute.") from exc
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
             log.error("Anthropic rejected the API key: %s", exc)
-            raise ExtractionError("Recipe import isn't working right now (server setup). Add the recipe by hand.") from exc
+            raise ExtractionError("import_setup", "Recipe import isn't working right now (server setup). Add the recipe by hand.") from exc
         except anthropic.APIError as exc:
             log.error("Anthropic request failed: %s", exc)
-            raise ExtractionError("Couldn't read that page right now. Try again, or add the recipe by hand.") from exc
+            raise ExtractionError("import_unavailable", "Couldn't read that page right now. Try again, or add the recipe by hand.") from exc
 
         log.info(json.dumps(_usage_log(self.model, responses, time.monotonic() - started)))
         if response.stop_reason == "refusal":
-            raise ExtractionError("Couldn't read a recipe from that page.")
+            raise ExtractionError("unreadable", "Couldn't read a recipe from that page.")
         if response.stop_reason != "end_turn":  # still paused, or ran out of room
-            raise ExtractionError("Couldn't finish reading that page. Try again, or add the recipe by hand.")
+            raise ExtractionError("incomplete", "Couldn't finish reading that page. Try again, or add the recipe by hand.")
         texts = [b.text for b in response.content if b.type == "text" and b.text.strip()]
         try:
             answer = json.loads(texts[-1])
         except (IndexError, ValueError) as exc:
-            raise ExtractionError("Couldn't read a recipe from that page.") from exc
+            raise ExtractionError("unreadable", "Couldn't read a recipe from that page.") from exc
         return to_draft(answer, link)

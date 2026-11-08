@@ -1,7 +1,7 @@
 """AI recipe import. Pick a provider by name; each one turns a link into a recipe draft.
 
 To add a provider (say Gemini or OpenAI): write a module with a class that has
-    extract(self, link: str, known_tags: list[str]) -> dict   # returns recipe.to_draft(...)
+    extract(self, link: str, known_tags: list[str], language: str) -> dict   # returns recipe.to_draft(...)
 using recipe.RECIPE_INSTRUCTIONS, recipe.request_text(...) and RECIPE_SCHEMA, add it to _PROVIDERS below, and set aiProvider (and
 aiModel) in infra/settings.local.json. Nothing else in the app changes.
 """
@@ -15,7 +15,7 @@ from .recipe import ExtractionError
 
 
 class RecipeExtractor(Protocol):
-    def extract(self, link: str, known_tags: list[str]) -> dict: ...
+    def extract(self, link: str, known_tags: list[str], language: str = "en") -> dict: ...
 
 
 def _anthropic() -> RecipeExtractor:
@@ -43,7 +43,7 @@ def enabled() -> bool:
 def get_extractor() -> RecipeExtractor:
     name = os.environ.get("AI_PROVIDER", "")
     if name not in _PROVIDERS:
-        raise ExtractionError("Recipe import isn't set up on this server.")
+        raise ExtractionError("import_off", "Recipe import isn't set up on this server.")
     return _PROVIDERS[name]()
 
 

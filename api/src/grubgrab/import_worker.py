@@ -24,12 +24,12 @@ def run(event: dict, store: Store, get_extractor: Callable[[], ai.RecipeExtracto
     household, job, link = event["householdId"], event["jobId"], event["link"]
     try:
         known_tags = [t for r in store.list_recipes(household) for t in r.get("tags") or []]
-        draft = get_extractor().extract(link, known_tags)
+        draft = get_extractor().extract(link, known_tags, event.get("language", "en"))
     except ai.ExtractionError as err:
-        store.finish_import_job(household, job, error=str(err))
+        store.finish_import_job(household, job, error=str(err), error_code=err.code)
     except Exception:  # a bug or an outage: record it for the app, keep the details in the log
         log.exception("recipe import job %s failed", job)
-        store.finish_import_job(household, job, error=UNEXPECTED)
+        store.finish_import_job(household, job, error=UNEXPECTED, error_code="import_unavailable")
     else:
         store.finish_import_job(household, job, recipe=draft)
 

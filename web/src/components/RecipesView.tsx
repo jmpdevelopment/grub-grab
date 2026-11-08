@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useI18n } from '../i18n'
 import { safeHref } from '../lib/links'
 import type { Recipe } from '../types'
 import { LoadingCards } from './LoadingCards'
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = false }: Props) {
+  const { t } = useI18n()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState<string | null>(null)
@@ -29,7 +31,7 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
     })
 
   const make = async (mode: 'replace' | 'append') => {
-    if (mode === 'replace' && hasList && !confirm('Replace the current shopping list?')) return
+    if (mode === 'replace' && hasList && !confirm(t('recipes.confirmReplace'))) return
     setBusy(true)
     try {
       await onMakeList([...selected], mode)
@@ -41,8 +43,8 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
 
   // Every tag in use, most-used first, for the filter chips.
   const counts = new Map<string, number>()
-  for (const r of recipes) for (const t of tagsOf(r)) counts.set(t, (counts.get(t) ?? 0) + 1)
-  const allTags = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t)
+  for (const r of recipes) for (const tag of tagsOf(r)) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+  const allTags = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([tag]) => tag)
   const activeTag = tag && counts.has(tag) ? tag : null // forget a filter whose last recipe lost the tag
 
   const q = query.trim().toLowerCase()
@@ -50,41 +52,41 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
     !q ||
     r.title.toLowerCase().includes(q) ||
     r.ingredients.some((i) => i.name.toLowerCase().includes(q)) ||
-    tagsOf(r).some((t) => t.includes(q))
+    tagsOf(r).some((tag) => tag.includes(q))
   const shown = recipes.filter((r) => matches(r) && (!activeTag || tagsOf(r).includes(activeTag)))
 
   return (
     <>
       <header className="bar">
-        <h1>Recipes</h1>
-        <button className="link strong" onClick={() => onOpen(null)}>+ New</button>
+        <h1>{t('recipes.title')}</h1>
+        <button className="link strong" onClick={() => onOpen(null)}>{t('recipes.new')}</button>
       </header>
       <div className="content">
         {recipes.length > 4 && (
-          <input className="search" type="search" placeholder="Search recipes or ingredients" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input className="search" type="search" placeholder={t('recipes.search')} value={query} onChange={(e) => setQuery(e.target.value)} />
         )}
 
         {allTags.length > 0 && (
-          <div className="tag-filter" role="group" aria-label="Filter by tag">
-            {allTags.map((t) => (
-              <button key={t} className="tag" aria-pressed={activeTag === t} onClick={() => setTag(activeTag === t ? null : t)}>
-                {t}
+          <div className="tag-filter" role="group" aria-label={t('recipes.filterByTag')}>
+            {allTags.map((tag) => (
+              <button key={tag} className="tag" aria-pressed={activeTag === tag} onClick={() => setTag(activeTag === tag ? null : tag)}>
+                {tag}
               </button>
             ))}
           </div>
         )}
 
         {loading ? (
-          <LoadingCards label="Loading recipes…" />
+          <LoadingCards label={t('recipes.loading')} />
         ) : recipes.length === 0 ? (
           <div className="empty">
-            <p>No recipes yet.</p>
-            <button className="btn" onClick={() => onOpen(null)}>Add your first recipe</button>
+            <p>{t('recipes.empty')}</p>
+            <button className="btn" onClick={() => onOpen(null)}>{t('recipes.addFirst')}</button>
           </div>
         ) : (
           <>
-            <p className="hint">Tick the recipes you're cooking, then make a shopping list.</p>
-            {shown.length === 0 && <p className="muted">No recipes match.</p>}
+            <p className="hint">{t('recipes.hint')}</p>
+            {shown.length === 0 && <p className="muted">{t('recipes.noMatch')}</p>}
             <ul className="cards">
               {shown.map((r) => (
                 <li key={r.id} className={selected.has(r.id) ? 'card selected' : 'card'}>
@@ -94,8 +96,8 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
                   <button className="card-body" onClick={() => onOpen(r)}>
                     <strong>{r.title}</strong>
                     <span className="muted">
-                      {r.ingredients.length} ingredient{r.ingredients.length === 1 ? '' : 's'}
-                      {r.servings ? ` · serves ${r.servings}` : ''}
+                      {t('recipes.ingredientCount', { count: r.ingredients.length })}
+                      {r.servings ? ` · ${t('recipes.serves', { count: r.servings })}` : ''}
                     </span>
                     {tagsOf(r).length > 0 && <span className="card-tags">{tagsOf(r).join(' · ')}</span>}
                   </button>
@@ -105,7 +107,7 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
                       href={safeHref(r.link)}
                       target="_blank"
                       rel="noopener noreferrer"
-                      aria-label={`Open the ${r.title} recipe page`}
+                      aria-label={t('recipes.openPage', { title: r.title })}
                     >
                       ↗
                     </a>
@@ -121,11 +123,11 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
         <div className="action-bar">
           {hasList && (
             <button className="btn secondary" disabled={busy} onClick={() => make('append')}>
-              Add to list
+              {t('recipes.addToList')}
             </button>
           )}
           <button className="btn" disabled={busy} onClick={() => make('replace')}>
-            {hasList ? 'New list' : 'Make list'} ({selected.size})
+            {t(hasList ? 'recipes.newList' : 'recipes.makeList', { count: selected.size })}
           </button>
         </div>
       )}

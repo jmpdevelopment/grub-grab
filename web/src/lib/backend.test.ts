@@ -39,6 +39,8 @@ describe('CloudBackend', () => {
       [`GET ${API}/recipes/import/j1`]: ok({ status: 'done', recipe: { title: 'T', servings: null, link: 'https://e.com', ingredients: [] } }),
       [`DELETE ${API}/me`]: ok({ deleted: true, householdDeleted: false }),
       [`POST ${API}/household`]: ok({ householdId: 'h', inviteCode: 'ABC234' }),
+      [`PATCH ${API}/me`]: () => new Response(null, { status: 204 }),
+      [`PUT ${API}/household/recipe-language`]: ok({ householdId: 'h', inviteCode: 'ABC234', recipeLanguage: 'pl' }),
       [`POST ${API}/household/join`]: ok({ householdId: 'h2', inviteCode: 'XYZ234' }),
       [`POST ${API}/household/invite`]: ok({ householdId: 'h', inviteCode: 'NEWCODE234' }),
       [`GET ${API}/recipes`]: ok([]),
@@ -63,6 +65,8 @@ describe('CloudBackend', () => {
     expect(await b.decideAccess('Google_2', false)).toBeUndefined()
     expect(await b.declineAllPending()).toBe(3)
     expect(await b.createHousehold()).toEqual({ householdId: 'h', inviteCode: 'ABC234' })
+    expect(await b.saveLanguage('lt')).toBeUndefined()
+    expect((await b.setRecipeLanguage('pl')).recipeLanguage).toBe('pl')
     expect(await b.joinHousehold('xyz234')).toEqual({ householdId: 'h2', inviteCode: 'XYZ234' })
     expect(await b.rotateInvite()).toEqual({ householdId: 'h', inviteCode: 'NEWCODE234' })
     await b.listRecipes()
@@ -87,6 +91,8 @@ describe('CloudBackend', () => {
       'POST /admin/requests/Google_2/decline',
       'POST /admin/requests/decline-pending',
       'POST /household',
+      'PATCH /me',
+      'PUT /household/recipe-language',
       'POST /household/join',
       'POST /household/invite',
       'GET /recipes',
@@ -104,11 +110,13 @@ describe('CloudBackend', () => {
     expect(calls.every((c) => c.headers.authorization === 'Bearer tok')).toBe(true)
     const body = (path: string) => calls.find((c) => `${c.method} ${c.url.pathname}${c.url.search}` === path)!
     expect(body('POST /household/join').body).toEqual({ code: 'xyz234' })
-    expect(body('POST /recipes/import').body).toEqual({ link: 'https://e.com' })
+    expect(body('POST /recipes/import').body).toEqual({ link: 'https://e.com' }) // the server uses the household's recipe language
     expect(body('POST /list/generate').body).toEqual({ recipeIds: ['r1'], mode: 'append' })
     expect(body('PATCH /list/items/i1').body).toEqual({ checked: true })
     expect(body('GET /me').headers['content-type']).toBeUndefined()
-    expect(body('POST /household').headers['content-type']).toBeUndefined() // no body
+    expect(body('POST /household').body).toEqual({ language: 'en' })
+    expect(body('PATCH /me').body).toEqual({ language: 'lt' })
+    expect(body('PUT /household/recipe-language').body).toEqual({ language: 'pl' })
     expect(body('POST /household/join').headers['content-type']).toBe('application/json')
   })
 
@@ -159,6 +167,8 @@ describe('LocalBackend', () => {
     expect(b.mode).toBe('local')
     expect(await b.me()).toEqual({ householdId: 'local', inviteCode: null })
     expect(await b.createHousehold()).toEqual({ householdId: 'local', inviteCode: null })
+    expect(await b.saveLanguage()).toBeUndefined()
+    expect(await b.setRecipeLanguage()).toEqual({ householdId: 'local', inviteCode: null })
     await b.createRecipe({ title: 'Soup', servings: null, notes: '', ingredients: [] })
     await expect(b.importRecipe()).rejects.toThrow('Recipe import needs the cloud version')
     await b.deleteAccount() // local mode: wipes this device's data
@@ -286,5 +296,26 @@ describe('CloudBackend: Fill from link (background job)', () => {
   it('gives up after a while', async () => {
     job({ status: 'pending' })
     await expect(new CloudBackend(CFG, { pollMs: 20, timeoutMs: 30 }).importRecipe('https://e.com')).rejects.toThrow('taking too long')
+  })
+})
+
+describe('CloudBackend: errors carry codes for translation', () => {
+  it('passes on the server\'s code and values', async () => {
+    saveTokens({ accessToken: 'tok' })
+    fakeFetch({
+      [`POST ${API}/household/join`]: () => json({ error: 'Invite codes are 10 characters', code: 'invite_code_length', params: { length: 10 } }, 400),
+    })
+    const err = await new CloudBackend(CFG).joinHousehold('x').catch((e) => e)
+    expect(err).toMatchObject({ code: 'invite_code_length', params: { length: 10 }, message: 'Invite codes are 10 characters' })
+  })
+
+  it('a failed import job reports its code', async () => {
+    saveTokens({ accessToken: 'tok' })
+    fakeFetch({
+      [`POST ${API}/recipes/import`]: () => json({ jobId: 'j2', remaining: 1 }, 202),
+      [`GET ${API}/recipes/import/j2`]: () => json({ status: 'failed', error: "Couldn't find a recipe on that page.", errorCode: 'no_recipe' }),
+    })
+    const err = await new CloudBackend(CFG, { pollMs: 1, timeoutMs: 50 }).importRecipe('https://e.com').catch((e) => e)
+    expect(err).toMatchObject({ code: 'no_recipe', message: "Couldn't find a recipe on that page." })
   })
 })

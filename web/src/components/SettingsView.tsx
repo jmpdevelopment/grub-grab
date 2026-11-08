@@ -1,8 +1,10 @@
 import { type ReactNode, useState } from 'react'
+import { useI18n, type Lang } from '../i18n'
 import { formatInviteCode } from '../lib/invite'
 import type { Household } from '../types'
 import { DeleteAccount } from './DeleteAccount'
 import { JoinForm } from './JoinForm'
+import { LanguagePicker } from './LanguagePicker'
 
 interface Props {
   mode: 'local' | 'cloud'
@@ -14,21 +16,34 @@ interface Props {
   /** Shown to admins only: the sign-up requests panel. */
   adminPanel?: ReactNode
   onDeleteAccount?: () => Promise<void>
+  /** Change what "Fill from link" writes in, for the whole household (cloud only). */
+  onRecipeLanguage?: (language: Lang) => Promise<void>
 }
 
-export function SettingsView({ mode, household, email, onJoin, onRotate, onSignOut, adminPanel, onDeleteAccount }: Props) {
+export function SettingsView({
+  mode,
+  household,
+  email,
+  onJoin,
+  onRotate,
+  onSignOut,
+  adminPanel,
+  onDeleteAccount,
+  onRecipeLanguage,
+}: Props) {
+  const { t, errorText } = useI18n()
   const [shareMsg, setShareMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   const rotate = async () => {
-    if (!confirm('Make a new code? The current one will stop working. People who already joined stay in.')) return
+    if (!confirm(t('settings.confirmNewCode'))) return
     setBusy(true)
     setShareMsg(null)
     try {
       await onRotate()
-      setShareMsg('New code ready.')
+      setShareMsg(t('settings.newCodeReady'))
     } catch (e) {
-      setShareMsg((e as Error).message)
+      setShareMsg(errorText(e))
     } finally {
       setBusy(false)
     }
@@ -37,42 +52,51 @@ export function SettingsView({ mode, household, email, onJoin, onRotate, onSignO
   return (
     <>
       <header className="bar">
-        <h1>Settings</h1>
+        <h1>{t('settings.title')}</h1>
       </header>
       <div className="content">
+        <section className="panel">
+          <h3>{t('language.label')}</h3>
+          <p className="muted">{t('settings.languageHint')}</p>
+          <LanguagePicker />
+        </section>
+        {onRecipeLanguage && household?.recipeLanguage && (
+          <section className="panel">
+            <h3>{t('settings.recipeLanguage')}</h3>
+            <p className="muted">{t('settings.recipeLanguageHint')}</p>
+            <LanguagePicker value={household.recipeLanguage} onChange={onRecipeLanguage} label={t('settings.recipeLanguage')} />
+          </section>
+        )}
         {mode === 'local' ? (
           <section className="panel">
-            <h3>Local mode</h3>
-            <p className="muted">
-              Recipes and lists are saved on this device only. Deploy the cloud version (see README) to sync between
-              phones.
-            </p>
+            <h3>{t('settings.localTitle')}</h3>
+            <p className="muted">{t('settings.localText')}</p>
           </section>
         ) : (
           <>
             {adminPanel}
             <section className="panel">
-              <h3>Account</h3>
-              <p>{email ?? 'Signed in'}</p>
+              <h3>{t('settings.account')}</h3>
+              <p>{email ?? t('settings.signedIn')}</p>
               <button className="btn secondary" onClick={onSignOut}>
-                Sign out
+                {t('settings.signOut')}
               </button>
             </section>
 
             <section className="panel">
-              <h3>Share with someone</h3>
-              <p className="muted">Give them this code. Once they enter it, you'll both see the same recipes and list.</p>
+              <h3>{t('settings.shareTitle')}</h3>
+              <p className="muted">{t('settings.shareText')}</p>
               <p className="invite">{household?.inviteCode ? formatInviteCode(household.inviteCode) : '…'}</p>
               <button className="btn secondary" disabled={busy || !household} onClick={rotate}>
-                New code
+                {t('settings.newCode')}
               </button>
               {shareMsg && <p className="hint">{shareMsg}</p>}
             </section>
 
             <section className="panel">
-              <h3>Join a household</h3>
-              <p className="muted">Got a code? Joining switches you to their recipes and list.</p>
-              <JoinForm onJoin={onJoin} joinedMessage="Joined! You now share recipes and the list." />
+              <h3>{t('settings.joinTitle')}</h3>
+              <p className="muted">{t('settings.joinText')}</p>
+              <JoinForm onJoin={onJoin} joinedMessage={t('settings.joined')} />
             </section>
 
             {onDeleteAccount && <DeleteAccount admin={Boolean(household?.admin)} onDelete={onDeleteAccount} />}
@@ -80,7 +104,7 @@ export function SettingsView({ mode, household, email, onJoin, onRotate, onSignO
         )}
         <p className="legal">
           <a href="/privacy.html" target="_blank" rel="noopener">
-            Privacy policy
+            {t('app.privacy')}
           </a>
         </p>
       </div>

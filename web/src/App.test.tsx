@@ -110,7 +110,7 @@ describe('local mode (no config.json)', () => {
     // The recipe disappears from storage behind the app's back (e.g. another tab deleted it).
     localStorage.setItem('gg.local', JSON.stringify({ recipes: [], items: [] }))
     await user.click(screen.getByRole('button', { name: 'Make list (1)' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('Recipe p not found')
+    expect(await screen.findByRole('alert')).toHaveTextContent('That recipe no longer exists. Pull down to refresh.')
     expect(screen.getByRole('heading', { name: 'Recipes' })).toBeInTheDocument()
     await user.click(screen.getByRole('alert'))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -175,6 +175,130 @@ describe('local mode (no config.json)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('languages', () => {
+  beforeEach(() => {
+    fakeLocation('http://localhost/')
+  })
+
+  it('switches language from the flag drop-down on the sign-in screen, and remembers it', async () => {
+    fakeApi()
+    const user = await renderApp()
+    expect(await screen.findByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
+    expect(document.documentElement.lang).toBe('en')
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Language' }), '🇵🇱 Polski')
+    expect(screen.getByRole('button', { name: 'Kontynuuj z Google' })).toBeInTheDocument()
+    expect(screen.getByText('Z przepisów prosto na listę zakupów.')).toBeInTheDocument()
+    expect(document.documentElement.lang).toBe('pl')
+    expect(localStorage.getItem('gg.lang')).toBe('pl')
+  })
+
+  it("starts in the browser's language", async () => {
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['lt-LT', 'en'])
+    fakeApi()
+    await renderApp()
+    expect(await screen.findByRole('button', { name: 'Tęsti su Google' })).toBeInTheDocument()
+  })
+
+  it('still works when the browser blocks storage', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked')
+    })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked')
+    })
+    fakeApi()
+    const user = await renderApp()
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'Language' }), '🇱🇹 Lietuvių')
+    expect(screen.getByRole('button', { name: 'Tęsti su Google' })).toBeInTheDocument()
+  })
+
+  describe('signed in', () => {
+    beforeEach(() => saveTokens({ idToken: jwt({ email: 'me@example.com' }) }))
+
+    it("uses the language saved on the person's account, wherever they sign in", async () => {
+      const { calls } = fakeApi({ household: { householdId: 'h1', inviteCode: 'ABCDEFGH23', language: 'lt' } })
+      await renderApp()
+      expect(await screen.findByRole('heading', { name: 'Receptai' })).toBeInTheDocument()
+      expect(localStorage.getItem('gg.lang')).toBe('lt')
+      expect(calls.some((c) => c.method === 'PATCH')).toBe(false) // nothing to save: it came from the account
+    })
+
+    it('saves a new choice to the account', async () => {
+      const { state } = fakeApi({ household: { householdId: 'h1', inviteCode: 'ABCDEFGH23', language: 'en' } })
+      const user = await renderApp()
+      await user.click(await screen.findByRole('button', { name: /Settings/ }))
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Language' }), '🇵🇱 Polski')
+      await waitFor(() => expect(state.household.language).toBe('pl'))
+      expect(tab(/Ustawienia/)).toBeInTheDocument()
+    })
+
+    it('a language that fails to save to the account still applies here', async () => {
+      fakeApi({}, { [`PATCH ${CFG.apiUrl}me`]: fail(503) })
+      const user = await renderApp()
+      await user.click(await screen.findByRole('button', { name: /Settings/ }))
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Language' }), '🇱🇹 Lietuvių')
+      expect(await screen.findByRole('heading', { name: 'Nustatymai' })).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('anyone in the household can change its recipe language, which sets the starter tags', async () => {
+      const { state } = fakeApi({ household: { householdId: 'h1', inviteCode: 'ABCDEFGH23', recipeLanguage: 'en' } })
+      const user = await renderApp()
+      await user.click(await screen.findByRole('button', { name: /Settings/ }))
+      const recipeLanguage = screen.getByRole('combobox', { name: 'Recipe language' })
+      expect(recipeLanguage).toHaveValue('en')
+      await user.selectOptions(recipeLanguage, '🇵🇱 Polski')
+      await waitFor(() => expect(state.household.recipeLanguage).toBe('pl'))
+      expect(recipeLanguage).toHaveValue('pl')
+      expect(screen.getByRole('combobox', { name: 'Language' })).toHaveValue('en') // the app itself stays English
+
+      await user.click(tab(/Recipes/))
+      await user.click(screen.getByRole('button', { name: 'Add your first recipe' }))
+      expect(screen.getByRole('button', { name: '+ zupa' })).toBeInTheDocument()
+    })
+
+    it("shows why the recipe language couldn't be changed", async () => {
+      fakeApi(
+        { household: { householdId: 'h1', inviteCode: 'ABCDEFGH23', recipeLanguage: 'en' } },
+        { [`PUT ${CFG.apiUrl}household/recipe-language`]: () => json({ error: 'Unknown language', code: 'language_invalid' }, 400) },
+      )
+      const user = await renderApp()
+      await user.click(await screen.findByRole('button', { name: /Settings/ }))
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Recipe language' }), '🇱🇹 Lietuvių')
+      expect(await screen.findByRole('alert')).toHaveTextContent('That language isn’t available.')
+      expect(screen.getByRole('combobox', { name: 'Recipe language' })).toHaveValue('en')
+    })
+
+    it('a new household starts with its creator\'s language', async () => {
+      localStorage.setItem('gg.lang', 'lt')
+      const { state } = fakeApi({ household: { householdId: null, inviteCode: null } })
+      const user = await renderApp()
+      await user.click(await screen.findByRole('button', { name: 'Sukurti namų ūkį' }))
+      await waitFor(() => expect(state.household.recipeLanguage).toBe('lt'))
+    })
+  })
+
+  it('shows the whole app and server messages in the chosen language', async () => {
+    localStorage.setItem('gg.lang', 'pl')
+    saveTokens({ idToken: jwt({ email: 'me@example.com' }) })
+    fakeApi(
+      { recipes: [PASTA] },
+      { [`POST ${CFG.apiUrl}household/join`]: () => json({ error: 'Invite code not found', code: 'invite_code_not_found' }, 404) },
+    )
+    const user = await renderApp()
+    expect(await screen.findByText('2 składniki · porcje: 2')).toBeInTheDocument()
+    await user.click(tab(/Ustawienia/))
+    expect(screen.getByRole('combobox', { name: 'Język' })).toHaveValue('pl')
+    await user.type(screen.getByLabelText('Kod zaproszenia'), 'NOPEN-OPE23')
+    await user.click(screen.getByRole('button', { name: 'Dołącz' }))
+    expect(await screen.findByText('Nie znaleziono kodu zaproszenia')).toBeInTheDocument()
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Język' }), '🇬🇧 English')
+    expect(tab(/Settings/)).toBeInTheDocument()
   })
 })
 
@@ -278,7 +402,7 @@ describe('cloud mode', () => {
         expect(await screen.findByRole('heading', { name: 'Welcome' })).toBeInTheDocument()
         expect(screen.getByText(/Signed in as me@example.com/)).toBeInTheDocument()
         expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
-        expect(paths(calls)).toEqual(['GET /config.json', 'GET /me'])
+        expect(paths(calls)).toEqual(['GET /config.json', 'GET /me', 'PATCH /me']) // a new account saves its language
       })
 
       it('starts a new household and lands on its empty recipe book', async () => {

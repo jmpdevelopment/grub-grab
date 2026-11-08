@@ -8,7 +8,14 @@ const API = CFG.apiUrl.replace(/\/$/, '')
 export interface ApiState {
   recipes: Recipe[]
   items: ListItem[]
-  household: { householdId: string | null; inviteCode: string | null; admin?: boolean; pendingRequests?: number }
+  household: {
+    householdId: string | null
+    inviteCode: string | null
+    admin?: boolean
+    pendingRequests?: number
+    language?: string
+    recipeLanguage?: string
+  }
   requests: AccessRequest[]
 }
 
@@ -33,14 +40,24 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
   const routes: Record<string, Handler> = {
     'GET /config.json': () => json(CFG),
     [`GET ${API}/me`]: () => json(state.household),
+    [`PATCH ${API}/me`]: (_u, init) => {
+      state.household = { ...state.household, language: body(init).language }
+      return noContent()
+    },
+    [`PUT ${API}/household/recipe-language`]: (_u, init) => {
+      state.household = { ...state.household, recipeLanguage: body(init).language }
+      return json({ householdId: state.household.householdId, inviteCode: state.household.inviteCode, recipeLanguage: body(init).language })
+    },
     [`DELETE ${API}/me`]: () => {
       state.recipes = []
       state.items = []
       state.household = { householdId: null, inviteCode: null }
       return json({ deleted: true, householdDeleted: true })
     },
-    [`POST ${API}/household`]: () => {
-      state.household = state.household.householdId ? state.household : { householdId: 'h-new', inviteCode: 'NEWHOME234' }
+    [`POST ${API}/household`]: (_u, init) => {
+      state.household = state.household.householdId
+        ? state.household
+        : { householdId: 'h-new', inviteCode: 'NEWHOME234', recipeLanguage: body(init).language }
       return json(state.household)
     },
     [`POST ${API}/household/join`]: (_u, init) => {

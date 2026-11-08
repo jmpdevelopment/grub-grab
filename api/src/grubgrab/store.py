@@ -2,9 +2,10 @@
 
 Key layout:
   PK=USER#<sub>        SK=PROFILE          -> householdId
+  PK=USER#<sub>        SK=SETTINGS         -> language — the app language this person chose (any device)
   PK=USER#<sub>        SK=JOINS#<window>   -> attempts, expiresAt (TTL)  — join rate limit
   PK=INVITE#<code>     SK=INVITE           -> householdId
-  PK=HH#<id>           SK=META             -> inviteCode, createdAt
+  PK=HH#<id>           SK=META             -> inviteCode, createdAt, recipeLanguage (what imports write in)
   PK=HH#<id>           SK=RECIPE#<id>      -> title, servings, ingredients, notes
   PK=HH#<id>           SK=ITEM#<id>        -> name, quantity, unit, checked, recipes
   PK=ACCESS            SK=REQ#<username>   -> email, name, status (pending/approved/declined), requestedAt
@@ -92,8 +93,9 @@ class Store:
         profile = self.table.get_item(Key={"PK": f"USER#{user_sub}", "SK": "PROFILE"}, ConsistentRead=True).get("Item")
         return self.get_household(profile["householdId"]) if profile else None
 
-    def create_household(self, user_sub: str) -> dict:
-        """Start a new household for the user. If they already have one, that one is returned instead."""
+    def create_household(self, user_sub: str, recipe_language: str = "en") -> dict:
+        """Start a new household for the user. If they already have one, that one is returned instead.
+        Its recipe language starts as the creator's app language; anyone in it can change it later."""
         key = {"PK": f"USER#{user_sub}", "SK": "PROFILE"}
         existing = self.find_household(user_sub)
         if existing:
@@ -104,18 +106,34 @@ class Store:
         household_id = uuid.uuid4().hex
         code = self._claim_invite_code(household_id)
         meta_key = {"PK": f"HH#{household_id}", "SK": "META"}
-        self.table.put_item(Item={**meta_key, "inviteCode": code, "createdAt": self._now()})
+        self.table.put_item(Item={**meta_key, "inviteCode": code, "createdAt": self._now(), "recipeLanguage": recipe_language})
         if not self._put_if_absent({**key, "householdId": household_id}):
             # A parallel request claimed the user first: drop ours and use theirs.
             self.table.delete_item(Key={"PK": f"INVITE#{code}", "SK": "INVITE"})
             self.table.delete_item(Key=meta_key)
-            return self.create_household(user_sub)
-        return {"householdId": household_id, "inviteCode": code}
+            return self.create_household(user_sub, recipe_language)
+        return {"householdId": household_id, "inviteCode": code, "recipeLanguage": recipe_language}
 
     def get_household(self, household_id: str) -> dict:
         key = {"PK": f"HH#{household_id}", "SK": "META"}
         meta = self.table.get_item(Key=key, ConsistentRead=True).get("Item") or {}
-        return {"householdId": household_id, "inviteCode": meta.get("inviteCode")}
+        # Households from before recipe languages existed were filled in English.
+        return {"householdId": household_id, "inviteCode": meta.get("inviteCode"), "recipeLanguage": meta.get("recipeLanguage", "en")}
+
+    def set_recipe_language(self, household_id: str, language: str) -> dict:
+        self.table.update_item(
+            Key={"PK": f"HH#{household_id}", "SK": "META"},
+            UpdateExpression="SET recipeLanguage = :l",
+            ExpressionAttributeValues={":l": language},
+        )
+        return self.get_household(household_id)
+
+    def get_user_language(self, user_sub: str) -> str | None:
+        item = self.table.get_item(Key={"PK": f"USER#{user_sub}", "SK": "SETTINGS"}, ConsistentRead=True).get("Item")
+        return item.get("language") if item else None
+
+    def set_user_language(self, user_sub: str, language: str) -> None:
+        self.table.put_item(Item={"PK": f"USER#{user_sub}", "SK": "SETTINGS", "language": language})
 
     def record_ai_import(self, household_id: str) -> int:
         """Count an AI recipe import this calendar month (UTC); returns imports so far, this one included."""
@@ -128,7 +146,7 @@ class Store:
         )
         return int(resp["Attributes"]["imports"])
 
-    def create_import_job(self, household_id: str, link: str) -> str:
+    def create_import_job(self, household_id: str, link: str, language: str = "en") -> str:
         job_id = uuid.uuid4().hex
         now = self._now()
         self.table.put_item(
@@ -137,19 +155,22 @@ class Store:
                 "SK": f"IMPORT#{job_id}",
                 "status": "pending",
                 "link": link,
+                "language": language,
                 "createdAt": now,
                 "expiresAt": now + IMPORT_JOB_TTL,
             }
         )
         return job_id
 
-    def finish_import_job(self, household_id: str, job_id: str, *, recipe: dict | None = None, error: str = "") -> None:
+    def finish_import_job(
+        self, household_id: str, job_id: str, *, recipe: dict | None = None, error: str = "", error_code: str = "unexpected"
+    ) -> None:
         if recipe is not None:
             # DynamoDB stores numbers as Decimal, so round-trip the draft (float quantities) through JSON.
             stored = json.loads(json.dumps(recipe), parse_float=Decimal)
             update, values = "SET #s = :s, recipe = :r", {":s": "done", ":r": stored}
         else:
-            update, values = "SET #s = :s, #e = :e", {":s": "failed", ":e": error}
+            update, values = "SET #s = :s, #e = :e, errorCode = :c", {":s": "failed", ":e": error, ":c": error_code}
         self.table.update_item(
             Key={"PK": f"HH#{household_id}", "SK": f"IMPORT#{job_id}"},
             UpdateExpression=update,
@@ -161,7 +182,7 @@ class Store:
         item = self.table.get_item(Key={"PK": f"HH#{household_id}", "SK": f"IMPORT#{job_id}"}, ConsistentRead=True).get("Item")
         if not item:
             return None
-        return {k: item[k] for k in ("status", "recipe", "error") if k in item}
+        return {k: item[k] for k in ("status", "recipe", "error", "errorCode") if k in item}
 
     def record_join_attempt(self, user_sub: str) -> int:
         """Count a join attempt in the current hour; returns attempts so far. Old windows expire via TTL."""
@@ -193,7 +214,7 @@ class Store:
         old = resp.get("Attributes", {}).get("inviteCode")
         if old:
             self.table.delete_item(Key={"PK": f"INVITE#{old}", "SK": "INVITE"})
-        return {"householdId": household_id, "inviteCode": code}
+        return self.get_household(household_id)
 
     def household_for(self, user_sub: str) -> str | None:
         household = self.find_household(user_sub)

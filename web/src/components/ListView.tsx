@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useI18n } from '../i18n'
 import { formatQty, listAsText, parseIngredientLine } from '../lib/aggregate'
 import type { ListItem } from '../types'
 import { LoadingCards } from './LoadingCards'
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh, loading = false }: Props) {
+  const { t } = useI18n()
   const [draft, setDraft] = useState('')
   const [toast, setToast] = useState<string | null>(null)
 
@@ -36,16 +38,16 @@ export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh,
 
   const copy = async () => {
     const text = listAsText(items)
-    if (!text) return flash('Nothing left to buy')
+    if (!text) return flash(t('list.nothingToBuy'))
     try {
       if (navigator.share && /Android|iPhone|iPad/i.test(navigator.userAgent)) {
-        await navigator.share({ title: 'Shopping list', text })
+        await navigator.share({ title: t('list.title'), text })
         return
       }
       await navigator.clipboard.writeText(text)
-      flash('List copied')
+      flash(t('list.copied'))
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') flash("Couldn't copy — try again")
+      if ((err as Error).name !== 'AbortError') flash(t('list.copyFailed'))
     }
   }
 
@@ -59,47 +61,50 @@ export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh,
           {i.recipes.length > 0 && <span className="item-from">{i.recipes.join(', ')}</span>}
         </span>
       </label>
-      <button className="icon" aria-label={`Remove ${i.name}`} onClick={() => onDelete(i)}>×</button>
+      <button className="icon" aria-label={t('list.removeItem', { name: i.name })} onClick={() => onDelete(i)}>×</button>
     </li>
   )
 
   return (
     <>
       <header className="bar">
-        <h1>Shopping list</h1>
+        <h1>{t('list.title')}</h1>
         <div className="bar-actions">
-          <button className="link" onClick={onRefresh} aria-label="Refresh">↻</button>
-          <button className="link strong" onClick={copy}>Share</button>
+          <button className="link" onClick={onRefresh} aria-label={t('list.refresh')}>↻</button>
+          <button className="link strong" onClick={copy}>{t('list.share')}</button>
         </div>
       </header>
       <div className="content">
         <form className="add-item" onSubmit={add}>
-          <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Add an item, e.g. 2 lemons" />
-          <button className="btn" disabled={!draft.trim()}>Add</button>
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={t('list.addPlaceholder')} />
+          <button className="btn" disabled={!draft.trim()}>{t('list.add')}</button>
         </form>
 
         {loading ? (
-          <LoadingCards label="Loading your list…" />
+          <LoadingCards label={t('list.loading')} />
         ) : items.length === 0 ? (
           <div className="empty">
-            <p>Your list is empty.</p>
-            <p className="muted">Tick some recipes on the Recipes tab to build one.</p>
+            <p>{t('list.empty')}</p>
+            <p className="muted">{t('list.emptyHint')}</p>
           </div>
         ) : (
           <>
-            <p className="hint">{todo.length} to buy{done.length ? ` · ${done.length} in the basket` : ''}</p>
+            <p className="hint">
+              {t('list.toBuy', { count: todo.length })}
+              {done.length ? ` · ${t('list.inBasketCount', { count: done.length })}` : ''}
+            </p>
             <ul className="items">{todo.map(row)}</ul>
             {done.length > 0 && (
               <>
                 <div className="section-head">
-                  <h3>In the basket</h3>
-                  <button className="link" onClick={() => onClear(true)}>Clear ticked</button>
+                  <h3>{t('list.inBasket')}</h3>
+                  <button className="link" onClick={() => onClear(true)}>{t('list.clearTicked')}</button>
                 </div>
                 <ul className="items">{done.map(row)}</ul>
               </>
             )}
-            <button className="btn danger subtle" onClick={() => confirm('Clear the whole list?') && onClear(false)}>
-              Clear whole list
+            <button className="btn danger subtle" onClick={() => confirm(t('list.confirmClearAll')) && onClear(false)}>
+              {t('list.clearAll')}
             </button>
           </>
         )}

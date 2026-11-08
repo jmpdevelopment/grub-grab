@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { parseIngredientLine } from '../lib/aggregate'
 import { normaliseLink, safeHref } from '../lib/links'
-import { cleanTag, SUGGESTED_TAGS } from '../lib/tags'
+import { translate, useI18n, type Lang } from '../i18n'
+import { cleanTag } from '../lib/tags'
 import type { ImportedRecipe, Ingredient, Recipe, RecipeInput } from '../types'
 
 interface Props {
@@ -11,6 +12,8 @@ interface Props {
   onSave: (r: RecipeInput) => Promise<void>
   onDelete?: () => Promise<void>
   onCancel: () => void
+  /** The household's recipe language: starter tag suggestions come in it. Defaults to the app language. */
+  recipeLanguage?: Lang
   /** "Fill from link": AI reads the page and fills the form for review. Absent when it's switched off. */
   onImport?: (link: string) => Promise<ImportedRecipe>
 }
@@ -19,7 +22,9 @@ type Row = { name: string; quantity: string; unit: string }
 const toRow = (i: Ingredient): Row => ({ name: i.name, quantity: i.quantity === null ? '' : String(i.quantity), unit: i.unit })
 const emptyRow = (): Row => ({ name: '', quantity: '', unit: '' })
 
-export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCancel, onImport }: Props) {
+export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCancel, onImport, recipeLanguage }: Props) {
+  const { t, errorText, suggestedTags: appLanguageTags } = useI18n()
+  const suggestedTags = recipeLanguage ? translate(recipeLanguage, 'tags.suggested').split(', ') : appLanguageTags
   const [title, setTitle] = useState(recipe?.title ?? '')
   const [servings, setServings] = useState(recipe?.servings ? String(recipe.servings) : '')
   const [notes, setNotes] = useState(recipe?.notes ?? '')
@@ -31,7 +36,7 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
   const [showPaste, setShowPaste] = useState(false)
   const [busy, setBusy] = useState(false)
   const [importing, setImporting] = useState(false)
-  const [imported, setImported] = useState<string | null>(null)
+  const [imported, setImported] = useState<number | null>(null) // imports left this month, after a fill
   const [error, setError] = useState<string | null>(null)
 
   const updateRow = (idx: number, patch: Partial<Row>) => {
@@ -62,12 +67,12 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
     setTagDraft('')
   }
   const openHref = safeHref(normaliseLink(link) ?? undefined) // only once it's a usable web address
-  const suggestions = [...new Set([...knownTags, ...SUGGESTED_TAGS])].filter((t) => !tags.includes(t))
+  const suggestions = [...new Set([...knownTags, ...suggestedTags])].filter((tag) => !tags.includes(tag))
 
   // Fills the form from the page; the person checks it and taps Save. Typed ingredients are only replaced
   // after asking, and a title or servings already entered are kept.
   const fillFromLink = async () => {
-    if (rows.some((r) => r.name.trim()) && !confirm('Replace the ingredients you’ve entered with the ones from the page?')) return
+    if (rows.some((r) => r.name.trim()) && !confirm(t('editor.confirmReplaceIngredients'))) return
     setImporting(true)
     setError(null)
     setImported(null)
@@ -78,25 +83,23 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
       setLink(draft.link)
       setTags((current) => (draft.tags ?? []).reduce(withTag, current)) // suggestions join yours
       setRows([...draft.ingredients.map(toRow), emptyRow()])
-      setImported(
-        `Filled in from the page — check it, then Save. ${remaining} import${remaining === 1 ? '' : 's'} left this month.`,
-      )
+      setImported(remaining)
     } catch (e) {
-      setError((e as Error).message)
+      setError(errorText(e))
     } finally {
       setImporting(false)
     }
   }
 
   const save = async () => {
-    if (!title.trim()) return setError('Give the recipe a title')
+    if (!title.trim()) return setError(t('editor.needTitle'))
     const cleanLink = normaliseLink(link)
-    if (cleanLink === null) return setError("That link doesn't look like a web address")
+    if (cleanLink === null) return setError(t('editor.badLink'))
     const ingredients: Ingredient[] = []
     for (const r of rows) {
       if (!r.name.trim()) continue
       const q = r.quantity.trim().replace(',', '.')
-      if (q && Number.isNaN(Number(q))) return setError(`"${r.quantity}" isn't a number (${r.name})`)
+      if (q && Number.isNaN(Number(q))) return setError(t('editor.notANumber', { value: r.quantity, name: r.name }))
       ingredients.push({ name: r.name.trim(), quantity: q ? Number(q) : null, unit: r.unit.trim() })
     }
     setBusy(true)
@@ -106,7 +109,7 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
       const allTags = withTag(tags, tagDraft)
       await onSave({ title: title.trim(), servings: servings ? Number(servings) : null, notes, link: cleanLink, tags: allTags, ingredients })
     } catch (e) {
-      setError((e as Error).message)
+      setError(errorText(e))
       setBusy(false)
     }
   }
@@ -114,19 +117,19 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
   return (
     <div className="editor">
       <header className="bar">
-        <button className="link" onClick={onCancel}>Cancel</button>
-        <h2>{recipe ? 'Edit recipe' : 'New recipe'}</h2>
-        <button className="link strong" onClick={save} disabled={busy}>Save</button>
+        <button className="link" onClick={onCancel}>{t('editor.cancel')}</button>
+        <h2>{recipe ? t('editor.edit') : t('editor.new')}</h2>
+        <button className="link strong" onClick={save} disabled={busy}>{t('editor.save')}</button>
       </header>
 
       <div className="content">
         {error && <p className="error">{error}</p>}
         <label className="field">
-          <span>Title</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Chicken curry" autoFocus={!recipe} />
+          <span>{t('editor.titleLabel')}</span>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('editor.titlePlaceholder')} autoFocus={!recipe} />
         </label>
         <div className="field">
-          <label htmlFor="recipe-link">Link</label>
+          <label htmlFor="recipe-link">{t('editor.linkLabel')}</label>
           <div className="link-row">
             <input
               id="recipe-link"
@@ -136,35 +139,35 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
               autoCorrect="off"
               value={link}
               onChange={(e) => setLink(e.target.value)}
-              placeholder="Where the recipe is from (optional)"
+              placeholder={t('editor.linkPlaceholder')}
             />
             {openHref && (
               <a className="btn secondary" href={openHref} target="_blank" rel="noopener noreferrer">
-                Open ↗
+                {t('editor.open')}
               </a>
             )}
           </div>
           {onImport &&
             (openHref ? (
               <button className="btn import" disabled={importing || busy} onClick={fillFromLink}>
-                {importing ? 'Reading recipe…' : '✨ Fill from link'}
+                {importing ? t('editor.reading') : t('editor.fill')}
               </button>
             ) : (
-              <p className="hint">Paste a recipe page’s link to fill in the ingredients automatically.</p>
+              <p className="hint">{t('editor.fillHint')}</p>
             ))}
-          {imported && <p className="hint">{imported}</p>}
+          {imported !== null && <p className="hint">{t('editor.filled', { count: imported })}</p>}
         </div>
         <label className="field narrow">
-          <span>Serves</span>
+          <span>{t('editor.servesLabel')}</span>
           <input inputMode="numeric" value={servings} onChange={(e) => setServings(e.target.value.replace(/\D/g, ''))} placeholder="4" />
         </label>
 
         <div className="field">
-          <span id="tags-label">Tags</span>
+          <span id="tags-label">{t('editor.tagsLabel')}</span>
           <div className="tags" role="group" aria-labelledby="tags-label">
-            {tags.map((t) => (
-              <button key={t} className="tag on" aria-label={`Remove tag ${t}`} onClick={() => setTags((prev) => prev.filter((x) => x !== t))}>
-                {t} ×
+            {tags.map((tag) => (
+              <button key={tag} className="tag on" aria-label={t('editor.removeTag', { tag })} onClick={() => setTags((prev) => prev.filter((x) => x !== tag))}>
+                {tag} ×
               </button>
             ))}
             <input
@@ -178,16 +181,16 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
                 }
               }}
               onBlur={() => addTag(tagDraft)}
-              placeholder="Add a tag"
-              aria-label="New tag"
+              placeholder={t('editor.addTag')}
+              aria-label={t('editor.newTag')}
               enterKeyHint="done"
             />
           </div>
           {suggestions.length > 0 && (
             <div className="tags suggestions">
-              {suggestions.map((t) => (
-                <button key={t} className="tag" onClick={() => addTag(t)}>
-                  + {t}
+              {suggestions.map((tag) => (
+                <button key={tag} className="tag" onClick={() => addTag(tag)}>
+                  + {tag}
                 </button>
               ))}
             </div>
@@ -195,8 +198,8 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
         </div>
 
         <div className="section-head">
-          <h3>Ingredients</h3>
-          <button className="link" onClick={() => setShowPaste((s) => !s)}>{showPaste ? 'Close' : 'Paste a list'}</button>
+          <h3>{t('editor.ingredients')}</h3>
+          <button className="link" onClick={() => setShowPaste((s) => !s)}>{showPaste ? t('editor.closePaste') : t('editor.pasteList')}</button>
         </div>
 
         {showPaste && (
@@ -205,26 +208,26 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
               rows={6}
               value={paste}
               onChange={(e) => setPaste(e.target.value)}
-              placeholder={'One per line, e.g.\n500 g spaghetti\n3 cloves garlic\n2 tbsp olive oil\nsalt'}
+              placeholder={t('editor.pastePlaceholder')}
             />
-            <button className="btn" onClick={applyPaste} disabled={!paste.trim()}>Add these</button>
+            <button className="btn" onClick={applyPaste} disabled={!paste.trim()}>{t('editor.addThese')}</button>
           </div>
         )}
 
         <div className="ing-rows">
           {rows.map((r, i) => (
             <div className="ing-row" key={i}>
-              <input className="qty" inputMode="decimal" value={r.quantity} onChange={(e) => updateRow(i, { quantity: e.target.value })} placeholder="Qty" />
-              <input className="unit" value={r.unit} onChange={(e) => updateRow(i, { unit: e.target.value })} placeholder="Unit" />
-              <input className="name" value={r.name} onChange={(e) => updateRow(i, { name: e.target.value })} placeholder="Ingredient" />
-              {r.name.trim() && <button className="icon" aria-label={`Remove ${r.name}`} onClick={() => removeRow(i)}>×</button>}
+              <input className="qty" inputMode="decimal" value={r.quantity} onChange={(e) => updateRow(i, { quantity: e.target.value })} placeholder={t('editor.qty')} />
+              <input className="unit" value={r.unit} onChange={(e) => updateRow(i, { unit: e.target.value })} placeholder={t('editor.unit')} />
+              <input className="name" value={r.name} onChange={(e) => updateRow(i, { name: e.target.value })} placeholder={t('editor.ingredient')} />
+              {r.name.trim() && <button className="icon" aria-label={t('editor.removeIngredient', { name: r.name })} onClick={() => removeRow(i)}>×</button>}
             </div>
           ))}
         </div>
 
         <label className="field">
-          <span>Notes</span>
-          <textarea rows={4} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Method, tips…" />
+          <span>{t('editor.notesLabel')}</span>
+          <textarea rows={4} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t('editor.notesPlaceholder')} />
         </label>
 
         {onDelete && (
@@ -232,18 +235,18 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
             className="btn danger"
             disabled={busy}
             onClick={async () => {
-              if (!confirm(`Delete "${title}"?`)) return
+              if (!confirm(t('editor.confirmDelete', { title }))) return
               setBusy(true)
               setError(null)
               try {
                 await onDelete()
               } catch (e) {
-                setError((e as Error).message)
+                setError(errorText(e))
                 setBusy(false)
               }
             }}
           >
-            Delete recipe
+            {t('editor.delete')}
           </button>
         )}
       </div>

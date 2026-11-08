@@ -14,8 +14,9 @@ class Extractor:
         self.result = result
         self.known_tags = None
 
-    def extract(self, link, known_tags):
+    def extract(self, link, known_tags, language):
         self.known_tags = known_tags
+        self.language = language
         if isinstance(self.result, Exception):
             raise self.result
         return {**self.result, "link": link}
@@ -44,12 +45,24 @@ def test_tells_the_ai_which_tags_the_household_already_uses(job):
     extractor = Extractor(DRAFT)
     run(event(hh, job_id), store, lambda: extractor)
     assert sorted(extractor.known_tags) == ["meat", "soup"]
+    assert extractor.language == "en"  # jobs from before languages existed
+
+
+def test_writes_the_recipe_in_the_jobs_language(job):
+    store, hh, job_id = job
+    extractor = Extractor(DRAFT)
+    run({**event(hh, job_id), "language": "lt"}, store, lambda: extractor)
+    assert extractor.language == "lt"
 
 
 def test_stores_a_readable_problem(job):
     store, hh, job_id = job
-    run(event(hh, job_id), store, lambda: Extractor(ai.ExtractionError("Couldn't find a recipe on that page.")))
-    assert store.get_import_job(hh, job_id) == {"status": "failed", "error": "Couldn't find a recipe on that page."}
+    run(event(hh, job_id), store, lambda: Extractor(ai.ExtractionError("no_recipe", "Couldn't find a recipe on that page.")))
+    assert store.get_import_job(hh, job_id) == {
+        "status": "failed",
+        "error": "Couldn't find a recipe on that page.",
+        "errorCode": "no_recipe",
+    }
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("boom"), KeyError("ANTHROPIC_SECRET_NAME")])
@@ -60,7 +73,7 @@ def test_never_raises_so_lambda_never_retries_and_bills_twice(job, failure):
         raise failure
 
     run(event(hh, job_id), store, broken)
-    assert store.get_import_job(hh, job_id) == {"status": "failed", "error": UNEXPECTED}
+    assert store.get_import_job(hh, job_id) == {"status": "failed", "error": UNEXPECTED, "errorCode": "import_unavailable"}
 
 
 def test_lambda_handler_sets_up_once_per_container(job, monkeypatch):

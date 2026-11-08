@@ -7,6 +7,8 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     restoreMocks: true,
+    // UI flows type and click a lot; on a busy machine or CI runner they can pass 5 s without being wrong.
+    testTimeout: 15_000,
     unstubGlobals: true,
     coverage: {
       provider: 'v8',

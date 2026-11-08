@@ -37,6 +37,10 @@ export interface Household {
   /** null until the user starts a household or joins one (cloud mode, first sign-in). */
   householdId: string | null
   inviteCode: string | null
+  /** What "Fill from link" writes in, for everyone in the household. */
+  recipeLanguage?: string
+  /** This person's app language, saved on their account (absent until first saved). */
+  language?: string
   /** Admins approve sign-up requests; only present for them. */
   admin?: boolean
   pendingRequests?: number
@@ -53,7 +57,9 @@ export interface AccessRequest {
 export interface Backend {
   readonly mode: 'local' | 'cloud'
   me(): Promise<Household>
-  createHousehold(): Promise<Household>
+  createHousehold(language?: string): Promise<Household>
+  saveLanguage(language: string): Promise<void>
+  setRecipeLanguage(language: string): Promise<Household>
   joinHousehold(code: string): Promise<Household>
   rotateInvite(): Promise<Household>
   importRecipe(link: string): Promise<ImportedRecipe>

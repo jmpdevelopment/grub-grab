@@ -41,10 +41,15 @@ def _get_store() -> Store:
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, message: str):
+    """An error for the app. `code` (with `params`) lets the app show it in the person's language
+    (web/src/i18n/locales/*.ts, key "error.<code>"); `message` is the English text."""
+
+    def __init__(self, status: int, code: str, message: str, **params):
         super().__init__(message)
         self.status = status
+        self.code = code
         self.message = message
+        self.params = params
 
 
 def _json_default(value):
@@ -71,22 +76,27 @@ def _body(event: dict) -> dict:
             raw = base64.b64decode(raw, validate=True).decode()
         data = json.loads(raw, parse_float=Decimal)
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ApiError(400, "Body must be JSON") from exc
+        raise ApiError(400, "bad_request", "Body must be JSON") from exc
     if not isinstance(data, dict):
-        raise ApiError(400, "Body must be a JSON object")
+        raise ApiError(400, "bad_request", "Body must be a JSON object")
     return data
+
+
+def _field_key(label: str) -> str:
+    """"Ingredient name" -> "ingredient_name": the app translates field names by this key."""
+    return label.lower().replace(" ", "_")
 
 
 def _text(value, field: str, *, required: bool = False, max_len: int = MAX_TEXT) -> str:
     if value is None:
         value = ""
     if not isinstance(value, str):
-        raise ApiError(400, f"{field} must be text")
+        raise ApiError(400, "field_not_text", f"{field} must be text", field=_field_key(field))
     value = value.strip()
     if required and not value:
-        raise ApiError(400, f"{field} is required")
+        raise ApiError(400, "field_required", f"{field} is required", field=_field_key(field))
     if len(value) > max_len:
-        raise ApiError(400, f"{field} is too long (max {max_len})")
+        raise ApiError(400, "field_too_long", f"{field} is too long (max {max_len})", field=_field_key(field), max=max_len)
     return value
 
 
@@ -94,13 +104,13 @@ def _quantity(value) -> Decimal | None:
     if value is None or value == "":
         return None
     if isinstance(value, bool) or not isinstance(value, (int, Decimal, str)):
-        raise ApiError(400, f"Invalid quantity: {value!r}")
+        raise ApiError(400, "quantity_invalid", f"Invalid quantity: {value!r}", value=str(value)[:40])
     try:
         q = Decimal(str(value).strip())
     except InvalidOperation as exc:
-        raise ApiError(400, f"Invalid quantity: {value!r}") from exc
+        raise ApiError(400, "quantity_invalid", f"Invalid quantity: {value!r}", value=str(value)[:40]) from exc
     if not q.is_finite() or q < 0 or q > MAX_QUANTITY:
-        raise ApiError(400, f"Invalid quantity: {value!r}")
+        raise ApiError(400, "quantity_invalid", f"Invalid quantity: {value!r}", value=str(value)[:40])
     return q
 
 
@@ -111,7 +121,7 @@ def _link(value) -> str:
         return ""
     parsed = urlparse(link)
     if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
-        raise ApiError(400, "Link must be a web address starting with http:// or https://")
+        raise ApiError(400, "link_invalid", "Link must be a web address starting with http:// or https://")
     return link
 
 
@@ -120,14 +130,14 @@ def _tags(value) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ApiError(400, "Tags must be a list")
+        raise ApiError(400, "bad_request", "Tags must be a list")
     tags: list[str] = []
     for raw in value:
         tag = _text(raw, "Tag", max_len=MAX_TAG_LEN).lower()
         if tag and tag not in tags:
             tags.append(tag)
     if len(tags) > MAX_TAGS:
-        raise ApiError(400, f"Too many tags (max {MAX_TAGS})")
+        raise ApiError(400, "too_many_tags", f"Too many tags (max {MAX_TAGS})", max=MAX_TAGS)
     return tags
 
 
@@ -135,20 +145,20 @@ def _servings(value) -> int | None:
     if value is None or value == "":
         return None
     if isinstance(value, bool) or not isinstance(value, (int, Decimal)) or value != int(value) or not 1 <= value <= 1000:
-        raise ApiError(400, "Servings must be a whole number from 1 to 1000")
+        raise ApiError(400, "servings_invalid", "Servings must be a whole number from 1 to 1000")
     return int(value)
 
 
 def _validate_recipe(data: dict) -> dict:
     raw_ingredients = data.get("ingredients") or []
     if not isinstance(raw_ingredients, list):
-        raise ApiError(400, "Ingredients must be a list")
+        raise ApiError(400, "bad_request", "Ingredients must be a list")
     if len(raw_ingredients) > MAX_INGREDIENTS:
-        raise ApiError(400, f"Too many ingredients (max {MAX_INGREDIENTS})")
+        raise ApiError(400, "too_many_ingredients", f"Too many ingredients (max {MAX_INGREDIENTS})", max=MAX_INGREDIENTS)
     ingredients = []
     for ing in raw_ingredients:
         if not isinstance(ing, dict):
-            raise ApiError(400, "Each ingredient must be an object")
+            raise ApiError(400, "bad_request", "Each ingredient must be an object")
         name = _text(ing.get("name"), "Ingredient name")
         if not name:
             continue  # blank rows from the editor are dropped
@@ -168,11 +178,11 @@ def _validate_recipe(data: dict) -> dict:
 def _recipe_ids(data: dict) -> list[str]:
     ids = data.get("recipeIds")
     if not isinstance(ids, list) or not ids:
-        raise ApiError(400, "Pick at least one recipe")
+        raise ApiError(400, "pick_recipe", "Pick at least one recipe")
     if not all(isinstance(i, str) and i for i in ids):
-        raise ApiError(400, "Recipe ids must be text")
+        raise ApiError(400, "bad_request", "Recipe ids must be text")
     if len(ids) > MAX_RECIPES_PER_LIST:
-        raise ApiError(400, f"Too many recipes (max {MAX_RECIPES_PER_LIST})")
+        raise ApiError(400, "too_many_recipes", f"Too many recipes (max {MAX_RECIPES_PER_LIST})", max=MAX_RECIPES_PER_LIST)
     return list(dict.fromkeys(ids))  # ignore duplicates
 
 
@@ -182,12 +192,12 @@ def _recipe_ids(data: dict) -> list[str]:
 def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
     mode = data.get("mode", "replace")
     if mode not in ("replace", "append"):
-        raise ApiError(400, "Mode must be 'replace' or 'append'")
+        raise ApiError(400, "bad_request", "Mode must be 'replace' or 'append'")
     recipes = []
     for rid in _recipe_ids(data):
         recipe = store.get_recipe(hh, rid)
         if recipe is None:
-            raise ApiError(404, f"Recipe {rid} not found")
+            raise ApiError(404, "recipe_not_found", f"Recipe {rid} not found")
         recipes.append(recipe)
 
     current = store.list_items(hh)
@@ -201,17 +211,24 @@ def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
         new_items = combine(remove + aggregate(recipes))
     # Check the size before writing anything, so an oversized request costs nothing.
     if kept + len(new_items) > MAX_LIST_ITEMS:
-        raise ApiError(409, f"That would make the list longer than {MAX_LIST_ITEMS} items")
+        raise ApiError(409, "list_too_long", f"That would make the list longer than {MAX_LIST_ITEMS} items", max=MAX_LIST_ITEMS)
     store.replace_items(hh, [i["id"] for i in remove], new_items)
     return store.list_items(hh)
 
 
-def _start_import_worker(household_id: str, job_id: str, link: str) -> None:
+def _language(data: dict) -> str:
+    language = data.get("language")
+    if language not in ai.recipe.LANGUAGES:
+        raise ApiError(400, "language_invalid", f"Unknown language {str(language)[:10]!r}")
+    return language
+
+
+def _start_import_worker(household_id: str, job_id: str, link: str, language: str) -> None:
     """Hand the job to the import worker function and return at once (it can take longer than an API call)."""
     boto3.client("lambda").invoke(
         FunctionName=os.environ["IMPORT_WORKER_NAME"],
         InvocationType="Event",
-        Payload=json.dumps({"householdId": household_id, "jobId": job_id, "link": link}).encode(),
+        Payload=json.dumps({"householdId": household_id, "jobId": job_id, "link": link, "language": language}).encode(),
     )
 
 
@@ -219,17 +236,22 @@ def _import_recipe(store: Store, hh: str, data: dict) -> dict:
     """Start filling a recipe draft from a web page with AI. The app polls for the result and shows it for
     review; nothing is saved by this."""
     if not ai.enabled():
-        raise ApiError(404, "Recipe import isn't set up on this server.")
+        raise ApiError(404, "import_off", "Recipe import isn't set up on this server.")
     link = _link(data.get("link"))
     if not link:
-        raise ApiError(400, "Paste a link to a recipe page first")
+        raise ApiError(400, "link_required", "Paste a link to a recipe page first")
     # Count the attempt before calling the AI, so the monthly allowance also caps what failures can cost.
     limit = int(os.environ.get("AI_MONTHLY_LIMIT") or DEFAULT_AI_MONTHLY_LIMIT)
     used = store.record_ai_import(hh)
     if used > limit:
-        raise ApiError(429, f"Your household has used this month's {limit} recipe imports. Add this one by hand.")
-    job_id = store.create_import_job(hh, link)
-    _start_import_worker(hh, job_id, link)
+        raise ApiError(
+            429, "import_limit", f"Your household has used this month's {limit} recipe imports. Add this one by hand.", limit=limit
+        )
+    # Written in the household's recipe language, whoever imports it, so names and tags match across the
+    # household and the shopping list can add them up.
+    language = store.get_household(hh)["recipeLanguage"]
+    job_id = store.create_import_job(hh, link, language)
+    _start_import_worker(hh, job_id, link, language)
     return _resp(202, {"jobId": job_id, "remaining": limit - used})
 
 
@@ -245,7 +267,7 @@ def _delete_sign_in(username: str) -> None:
 def _delete_account(sub: str, claims: dict, store: Store) -> dict:
     username = claims.get("username")
     if not username:
-        raise ApiError(400, "Can't tell which account to delete")
+        raise ApiError(400, "account_unknown", "Can't tell which account to delete")
     # Data first: if removing the sign-in then fails, a retry finishes the job (nothing is left orphaned).
     household_deleted = store.delete_user_data(sub, username)
     _delete_sign_in(username)
@@ -262,7 +284,7 @@ def _is_admin(claims: dict) -> bool:
 
 def _admin_route(route_key: str, params: dict, claims: dict, store: Store) -> dict:
     if not _is_admin(claims):
-        raise ApiError(403, "Only admins can do that")
+        raise ApiError(403, "admins_only", "Only admins can do that")
     if route_key == "GET /admin/requests":
         return _resp(200, store.access_requests())
     if route_key == "POST /admin/requests/decline-pending":
@@ -270,12 +292,12 @@ def _admin_route(route_key: str, params: dict, claims: dict, store: Store) -> di
     if route_key in ("POST /admin/requests/{username}/approve", "POST /admin/requests/{username}/decline"):
         decided = store.decide_access(params["username"], approve=route_key.endswith("/approve"))
         return _resp(200, _require(decided, "Request"))
-    raise ApiError(404, f"No route for {route_key}")
+    raise ApiError(404, "bad_request", f"No route for {route_key}")
 
 
 def _require(found, what: str):
     if not found:
-        raise ApiError(404, f"{what} not found")
+        raise ApiError(404, f"{_field_key(what)}_not_found", f"{what} not found")
     return found
 
 
@@ -283,7 +305,7 @@ def route(event: dict, store: Store) -> dict:
     claims = ((event.get("requestContext") or {}).get("authorizer") or {}).get("jwt", {}).get("claims", {})
     sub = claims.get("sub")
     if not sub:
-        raise ApiError(401, "Not signed in")
+        raise ApiError(401, "not_signed_in", "Not signed in")
 
     route_key = event.get("routeKey", "")
     params = event.get("pathParameters") or {}
@@ -293,26 +315,35 @@ def route(event: dict, store: Store) -> dict:
     if route_key == "GET /me":
         # New users have no household until they start one or join one (the app asks on first sign-in).
         me = store.find_household(sub) or {"householdId": None, "inviteCode": None}
+        language = store.get_user_language(sub)
+        if language:
+            me = {**me, "language": language}
         if _is_admin(claims):
             me = {**me, "admin": True, "pendingRequests": len(store.access_requests())}
         return _resp(200, me)
+    if route_key == "PATCH /me":
+        store.set_user_language(sub, _language(_body(event)))
+        return _resp(204)
     if route_key == "DELETE /me":
         return _delete_account(sub, claims, store)
     if route_key == "POST /household":
-        return _resp(200, store.create_household(sub))
+        data = _body(event)
+        return _resp(200, store.create_household(sub, _language(data) if "language" in data else "en"))
     if route_key == "POST /household/join":
         # Count every attempt before looking anything up, so codes can't be brute-forced.
         if store.record_join_attempt(sub) > MAX_JOIN_ATTEMPTS_PER_HOUR:
-            raise ApiError(429, "Too many attempts. Try again in an hour.")
+            raise ApiError(429, "too_many_attempts", "Too many attempts. Try again in an hour.")
         code = normalise_invite_code(_text(_body(event).get("code"), "Code", required=True, max_len=20))
         if len(code) != INVITE_LENGTH:
-            raise ApiError(400, f"Invite codes are {INVITE_LENGTH} characters")
+            raise ApiError(400, "invite_code_length", f"Invite codes are {INVITE_LENGTH} characters", length=INVITE_LENGTH)
         return _resp(200, _require(store.join_household(sub, code), "Invite code"))
 
     hh = store.household_for(sub)
     if hh is None:
-        raise ApiError(409, "No household yet. Start one or join one with a code.")
+        raise ApiError(409, "no_household", "No household yet. Start one or join one with a code.")
 
+    if route_key == "PUT /household/recipe-language":
+        return _resp(200, store.set_recipe_language(hh, _language(_body(event))))
     if route_key == "POST /household/invite":
         return _resp(200, store.rotate_invite(hh))
 
@@ -321,7 +352,7 @@ def route(event: dict, store: Store) -> dict:
     if route_key == "POST /recipes":
         recipe = _validate_recipe(_body(event))
         if store.count_recipes(hh) >= MAX_RECIPES:
-            raise ApiError(409, f"You've reached the limit of {MAX_RECIPES} recipes. Delete some to add more.")
+            raise ApiError(409, "recipe_limit", f"You've reached the limit of {MAX_RECIPES} recipes. Delete some to add more.", max=MAX_RECIPES)
         return _resp(201, store.put_recipe(hh, recipe))
     if route_key == "POST /recipes/import":
         return _import_recipe(store, hh, _body(event))
@@ -345,12 +376,12 @@ def route(event: dict, store: Store) -> dict:
         data = _body(event)
         name = _text(data.get("name"), "Name", required=True)
         if store.count_items(hh) >= MAX_LIST_ITEMS:
-            raise ApiError(409, f"The list is full ({MAX_LIST_ITEMS} items). Clear some to add more.")
+            raise ApiError(409, "list_full", f"The list is full ({MAX_LIST_ITEMS} items). Clear some to add more.", max=MAX_LIST_ITEMS)
         return _resp(201, store.add_item(hh, name, _quantity(data.get("quantity")), _text(data.get("unit"), "Unit")))
     if route_key == "PATCH /list/items/{id}":
         checked = _body(event).get("checked")
         if not isinstance(checked, bool):
-            raise ApiError(400, "checked must be true or false")
+            raise ApiError(400, "bad_request", "checked must be true or false")
         return _resp(200, _require(store.set_checked(hh, params["id"], checked), "Item"))
     if route_key == "DELETE /list/items/{id}":
         store.delete_item(hh, params["id"])
@@ -360,14 +391,14 @@ def route(event: dict, store: Store) -> dict:
         store.clear_items(hh, only_checked=only_checked)
         return _resp(204)
 
-    raise ApiError(404, f"No route for {route_key}")
+    raise ApiError(404, "bad_request", f"No route for {route_key}")
 
 
 def handle(event: dict, store: Store) -> dict:
     try:
         return route(event, store)
     except ApiError as err:
-        return _resp(err.status, {"error": err.message})
+        return _resp(err.status, {"error": err.message, "code": err.code, "params": err.params})
 
 
 def lambda_handler(event, context):

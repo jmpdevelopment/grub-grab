@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useI18n } from '../i18n'
 import type { AccessRequest } from '../types'
 
 interface Props {
@@ -11,11 +12,9 @@ interface Props {
   reloadKey?: number
 }
 
-const when = (seconds: number) =>
-  new Date(seconds * 1000).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
-
 /** Admins only: people who signed in with Google and are waiting to be let in. */
 export function AccessRequests({ load, decide, declineAll, onCount, reloadKey = 0 }: Props) {
+  const { t, errorText, formatDate } = useI18n()
   const [requests, setRequests] = useState<AccessRequest[] | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -28,12 +27,12 @@ export function AccessRequests({ load, decide, declineAll, onCount, reloadKey = 
         setRequests(r)
         onCount(r.length)
       },
-      (e: Error) => live && setMsg(e.message),
+      (e: Error) => live && setMsg(errorText(e)),
     )
     return () => {
       live = false
     }
-  }, [load, onCount, reloadKey])
+  }, [load, onCount, reloadKey, errorText])
 
   const run = async (work: () => Promise<AccessRequest[]>, done: string) => {
     setBusy(true)
@@ -44,7 +43,7 @@ export function AccessRequests({ load, decide, declineAll, onCount, reloadKey = 
       onCount(next.length)
       setMsg(done)
     } catch (e) {
-      setMsg((e as Error).message)
+      setMsg(errorText(e))
     } finally {
       setBusy(false)
     }
@@ -56,28 +55,26 @@ export function AccessRequests({ load, decide, declineAll, onCount, reloadKey = 
         await decide(r.username, approve)
         return requests!.filter((x) => x.username !== r.username)
       },
-      approve
-        ? `Approved. ${r.name || r.email} can now sign in and join with your invite code.`
-        : `Declined ${r.name || r.email}.`,
+      t(approve ? 'requests.approved' : 'requests.declined', { who: r.name || r.email }),
     )
 
   const rejectAll = () => {
-    if (!confirm(`Decline all ${requests!.length} requests?`)) return
+    if (!confirm(t('requests.confirmDeclineAll', { count: requests!.length }))) return
     run(async () => {
       await declineAll()
       return []
-    }, 'Declined everyone who was waiting.')
+    }, t('requests.declinedAll'))
   }
 
   return (
     <section className="panel">
-      <h3>Sign-up requests</h3>
+      <h3>{t('requests.title')}</h3>
       {requests === null ? (
-        <p className="muted">{msg ?? 'Loading…'}</p>
+        <p className="muted">{msg ?? t('app.loading')}</p>
       ) : (
         <>
           {requests.length === 0 ? (
-            <p className="muted">No one is waiting. New people who sign in with Google show up here for you to approve.</p>
+            <p className="muted">{t('requests.none')}</p>
           ) : (
             <ul className="requests">
               {requests.map((r) => {
@@ -87,14 +84,14 @@ export function AccessRequests({ load, decide, declineAll, onCount, reloadKey = 
                     <div className="request-who">
                       <strong>{who}</strong>
                       {r.name && r.email && <span className="muted">{r.email}</span>}
-                      <span className="muted">asked {when(r.requestedAt)}</span>
+                      <span className="muted">{t('requests.asked', { when: formatDate(r.requestedAt) })}</span>
                     </div>
                     <div className="request-actions">
-                      <button className="btn" disabled={busy} aria-label={`Approve ${who}`} onClick={() => answer(r, true)}>
-                        Approve
+                      <button className="btn" disabled={busy} aria-label={t('requests.approveWho', { who })} onClick={() => answer(r, true)}>
+                        {t('requests.approve')}
                       </button>
-                      <button className="btn secondary" disabled={busy} aria-label={`Decline ${who}`} onClick={() => answer(r, false)}>
-                        Decline
+                      <button className="btn secondary" disabled={busy} aria-label={t('requests.declineWho', { who })} onClick={() => answer(r, false)}>
+                        {t('requests.decline')}
                       </button>
                     </div>
                   </li>
@@ -104,7 +101,7 @@ export function AccessRequests({ load, decide, declineAll, onCount, reloadKey = 
           )}
           {requests.length > 1 && (
             <button className="btn danger subtle" disabled={busy} onClick={rejectAll}>
-              Decline all
+              {t('requests.declineAll')}
             </button>
           )}
           {msg && <p className="hint">{msg}</p>}

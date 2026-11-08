@@ -102,11 +102,24 @@ class TestToDraft:
 
 class TestRequestText:
     def test_offers_the_household_tags_once_each_in_order(self):
-        text = request_text(LINK, ["soup", "meat", "soup", "", "chicken"])
-        assert text == f"Recipe page: {LINK}\nThe household's existing tags: chicken, meat, soup"
+        text = request_text(LINK, ["soup", "meat", "soup", "", "chicken"], "pl")
+        assert text == f"Recipe page: {LINK}\nWrite the recipe in: Polish\nThe household's existing tags: chicken, meat, soup"
 
-    def test_a_new_household_gets_the_starter_tags(self):
-        assert request_text(LINK, []).endswith("existing tags: " + ", ".join(SUGGESTED_TAGS))
+    @pytest.mark.parametrize("lang, name", [("en", "English"), ("pl", "Polish"), ("lt", "Lithuanian"), ("xx", "English"), (None, "English")])
+    def test_a_new_household_gets_starter_tags_in_its_language(self, lang, name):
+        text = request_text(LINK, [], lang)
+        code = lang if lang in SUGGESTED_TAGS else "en"
+        assert f"Write the recipe in: {name}" in text
+        assert text.endswith("existing tags: " + ", ".join(SUGGESTED_TAGS[code]))
+
+    def test_starter_tags_match_the_apps_translations(self):
+        """Same words as "tags.suggested" in the app, so the editor and the AI suggest the same tags."""
+        from pathlib import Path
+
+        locales = Path(__file__).resolve().parents[2] / "web" / "src" / "i18n" / "locales"
+        for lang, tags in SUGGESTED_TAGS.items():
+            text = (locales / f"{lang}.ts").read_text()
+            assert f"'tags.suggested': '{', '.join(tags)}'" in text, lang
 
     def test_caps_a_long_tag_list(self):
         text = request_text(LINK, [f"t{n:03}" for n in range(80)])
@@ -202,8 +215,9 @@ class TestClaudeAdapter:
         assert body["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": RECIPE_SCHEMA}}
         assert body["tools"] == [{"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 2, "max_content_tokens": 30000}]
         assert body["fallbacks"] == "default" and "server-side-fallback-2026-07-01" in headers["anthropic-beta"]
-        assert body["messages"] == [{"role": "user", "content": request_text(LINK, [])}]
-        assert "Translate from the page's language into English" in body["system"]
+        assert body["messages"] == [{"role": "user", "content": request_text(LINK, [], "en")}]
+        assert "in the language the request asks for" in body["system"]
+        assert "g, kg, ml, l, tsp and tbsp as exactly these codes, in every language" in body["system"]
         assert "thinking" not in body and "temperature" not in body
 
     def test_reads_the_last_text_after_the_fetch(self):

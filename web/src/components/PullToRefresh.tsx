@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useI18n } from '../i18n'
 
 export const PULL_THRESHOLD = 70 // px of (damped) pull needed to trigger a refresh
 const MAX_PULL = 110
@@ -13,6 +14,7 @@ interface Props {
  * so this is the way to fetch the other person's changes or a newly deployed version.
  */
 export function PullToRefresh({ onRefresh }: Props) {
+  const { t } = useI18n()
   const [pull, setPull] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   // Read inside the listeners without re-subscribing on every render.
@@ -63,7 +65,7 @@ export function PullToRefresh({ onRefresh }: Props) {
   }, [])
 
   if (!pull && !refreshing) return null
-  const label = refreshing ? 'Refreshing…' : pull >= PULL_THRESHOLD ? 'Release to refresh' : 'Pull to refresh'
+  const label = refreshing ? t('refresh.busy') : pull >= PULL_THRESHOLD ? t('refresh.release') : t('refresh.pull')
   return (
     <div className="ptr" role="status" style={{ transform: `translate(-50%, ${refreshing ? PULL_THRESHOLD / 2 : pull / 2}px)` }}>
       <span className={refreshing ? 'ptr-icon spin' : 'ptr-icon'} aria-hidden style={{ rotate: `${pull * 3}deg` }}>
