@@ -6,6 +6,7 @@ matching RECIPE_SCHEMA, then hands the parsed JSON to to_draft(). Nothing here k
 
 from __future__ import annotations
 
+import hashlib
 import json
 from decimal import Decimal, InvalidOperation
 
@@ -101,13 +102,20 @@ RECIPE_SCHEMA: dict = {
 }
 
 
+# A short fingerprint of the prompt and answer shape, kept with each import, so a problem report shows
+# which version of the prompt produced the result.
+PROMPT_VERSION = hashlib.sha256((RECIPE_INSTRUCTIONS + json.dumps(RECIPE_SCHEMA, sort_keys=True)).encode()).hexdigest()[:12]
+
+
 class ExtractionError(Exception):
     """Something the person should be told, e.g. the page has no recipe. `code` lets the app show it in the
-    person's language ("error.<code>" in web/src/i18n/locales); the message is the English text."""
+    person's language ("error.<code>" in web/src/i18n/locales); the message is the English text.
+    `details` (set by a provider when it got that far) describes the AI request, for problem reports."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+        self.details: dict = {}
 
 
 # Defensive limits: the app's own validation applies too, but an AI answer is never trusted blindly.

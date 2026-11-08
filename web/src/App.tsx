@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AccessRequests } from './components/AccessRequests'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { HouseholdSetup } from './components/HouseholdSetup'
 import { LanguagePicker } from './components/LanguagePicker'
 import { PullToRefresh } from './components/PullToRefresh'
@@ -12,6 +13,8 @@ import { completeSignIn, currentEmail, forgetSession, getAccessToken, SignInNoti
 import { aisleKey } from './lib/aisles'
 import { AuthRequiredError, CloudBackend, LocalBackend } from './lib/backend'
 import { loadConfig, type AppConfig } from './lib/config'
+import { configureReporting, flushQueue, ignoreFailure, noteError, sendReport, type Report, type ReportContext } from './lib/feedback'
+import { record } from './lib/journey'
 import { I18nProvider, isLang, useI18n, type MessageKey } from './i18n'
 import type { Backend, Household, ListItem, Recipe } from './types'
 
@@ -28,7 +31,9 @@ const byTitle = (a: Recipe, b: Recipe) => a.title.localeCompare(b.title)
 export default function App() {
   return (
     <I18nProvider>
-      <GrubGrab />
+      <ErrorBoundary>
+        <GrubGrab />
+      </ErrorBoundary>
     </I18nProvider>
   )
 }
@@ -74,6 +79,44 @@ function GrubGrab() {
   const backend = boot.state === 'ready' ? boot.backend : null
   const cfg = boot.state === 'loading' ? null : boot.cfg
 
+  // ---- problem reports ------------------------------------------------------
+  // Where the person is, for their journey and for every report.
+  const screen =
+    boot.state !== 'ready'
+      ? boot.state
+      : household && !household.householdId
+        ? 'setup'
+        : editing !== null
+          ? editing === 'new'
+            ? 'editor:new'
+            : 'editor:edit'
+          : tab
+  const context = useRef<ReportContext>({ language: lang, screen })
+  useEffect(() => {
+    context.current = { language: lang, recipeLanguage: household?.recipeLanguage, screen }
+  }, [lang, household?.recipeLanguage, screen])
+  useEffect(() => record({ type: 'screen', name: screen }), [screen])
+
+  // Once the server is reachable: report unexpected errors by themselves, and send reports kept offline.
+  useEffect(() => {
+    if (backend?.mode !== 'cloud') return
+    configureReporting(backend, () => context.current)
+    const flush = () => void flushQueue(backend)
+    const onError = (e: ErrorEvent) => noteError(e.error ?? e.message, 'window')
+    const onRejection = (e: PromiseRejectionEvent) => noteError(e.reason, 'promise')
+    flush()
+    window.addEventListener('online', flush)
+    window.addEventListener('error', onError)
+    window.addEventListener('unhandledrejection', onRejection)
+    return () => {
+      configureReporting(null)
+      window.removeEventListener('online', flush)
+      window.removeEventListener('error', onError)
+      window.removeEventListener('unhandledrejection', onRejection)
+    }
+  }, [backend])
+  const sendFeedback = useCallback((report: Report) => sendReport(backend!, report, context.current), [backend])
+
   /** Run a backend call: clear the old error, show a new one, or send the user to sign in. */
   const guard = useCallback(
     async <T,>(fn: () => Promise<T>): Promise<T | typeof FAILED> => {
@@ -83,7 +126,10 @@ function GrubGrab() {
       } catch (e) {
         // Only the cloud backend raises AuthRequiredError, and it only exists when cfg is set.
         if (e instanceof AuthRequiredError) setBoot({ state: 'signin', cfg: cfg! })
-        else setError(e)
+        else {
+          setError(e)
+          noteError(e, context.current.screen)
+        }
         return FAILED
       }
     },
@@ -131,6 +177,7 @@ function GrubGrab() {
 
   /** Pull-to-refresh: switch to a newly deployed version if there is one, otherwise reload the data. */
   const pullRefresh = useCallback(async () => {
+    record({ type: 'action', name: 'pull-to-refresh' })
     if (await updateApp()) return
     await refresh()
   }, [refresh])
@@ -207,6 +254,10 @@ function GrubGrab() {
         recipe={recipe}
         knownTags={[...new Set(recipes.flatMap((r) => r.tags ?? []))].sort()}
         onImport={cfg?.aiImport && b.mode === 'cloud' ? b.importRecipe : undefined}
+        onFeedback={b.mode === 'cloud' ? sendFeedback : undefined}
+        onImportOutcome={(jobId, outcome, changes) =>
+          void sendFeedback({ kind: 'outcome', jobId, outcome, changes }).catch(ignoreFailure)
+        }
         recipeLanguage={isLang(household?.recipeLanguage) ? household.recipeLanguage : undefined}
         onCancel={() => setEditing(null)}
         onSave={async (input) => {
@@ -290,6 +341,7 @@ function GrubGrab() {
         {tab === 'settings' && (
           <SettingsView
             mode={b.mode}
+            onFeedback={b.mode === 'cloud' ? sendFeedback : undefined}
             household={household}
             email={currentEmail()}
             onSignOut={() => void signOut(cfg!)} // the button only exists in cloud mode, where cfg is set

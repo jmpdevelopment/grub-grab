@@ -1,11 +1,19 @@
 import { AppError } from '../i18n/errors'
-import type { AccessRequest, Backend, Household, ImportedRecipe, ListItem, Recipe, RecipeInput } from '../types'
+import type { AccessRequest, Backend, FeedbackBody, Household, ImportedRecipe, ListItem, Recipe, RecipeInput } from '../types'
 import { aggregate, combine } from './aggregate'
 import { aisleKey } from './aisles'
 import { getAccessToken } from './auth'
 import type { AppConfig } from './config'
+import { record, routeOf } from './journey'
 
-export class AuthRequiredError extends Error {}
+export class AuthRequiredError extends Error {
+  name = 'AuthRequiredError'
+}
+
+/** The import job an error came from, if any (so a problem report can include it). */
+export const jobIdOf = (error: unknown): string | undefined => (error as { jobId?: string } | null)?.jobId
+
+const withJob = <E extends Error>(error: E, jobId: string) => Object.assign(error, { jobId })
 
 /** How "Fill from link" waits for its background job. */
 export interface ImportTiming {
@@ -35,11 +43,21 @@ export class CloudBackend implements Backend {
   private async req<T>(method: string, path: string, body?: unknown): Promise<T> {
     const token = await getAccessToken(this.cfg)
     if (!token) throw new AuthRequiredError('Please sign in')
-    const res = await fetch(`${this.cfg.apiUrl.replace(/\/$/, '')}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-    })
+    const started = Date.now()
+    const step = { type: 'api' as const, route: `${method} ${routeOf(path)}` }
+    let res: Response
+    try {
+      res = await fetch(`${this.cfg.apiUrl.replace(/\/$/, '')}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      })
+    } catch (e) {
+      record({ ...step, status: 0, ms: Date.now() - started }) // no connection
+      throw e
+    }
+    const requestId = res.headers.get('apigw-requestid') ?? undefined
+    record({ ...step, status: res.status, ms: Date.now() - started, ...(requestId ? { requestId } : {}) })
     if (res.status === 401) throw new AuthRequiredError('Please sign in')
     if (!res.ok) {
       // The API sends a message code (shown in the person's language) with its English text.
@@ -67,15 +85,22 @@ export class CloudBackend implements Backend {
     const deadline = Date.now() + this.timing.timeoutMs
     for (;;) {
       const job = await this.req<ImportJob>('GET', `/recipes/import/${jobId}`)
-      if (job.status === 'done') return { recipe: job.recipe, remaining }
-      if (job.status === 'failed') throw job.errorCode ? new AppError(job.errorCode, {}, job.error) : new Error(job.error)
+      if (job.status === 'done') return { recipe: job.recipe, remaining, jobId }
+      if (job.status === 'failed')
+        throw withJob(job.errorCode ? new AppError(job.errorCode, {}, job.error) : new Error(job.error), jobId)
       if (Date.now() + this.timing.pollMs > deadline)
-        throw new AppError('import_slow', {}, 'Reading that page is taking too long. Try again later, or add the recipe by hand.')
+        throw withJob(
+          new AppError('import_slow', {}, 'Reading that page is taking too long. Try again later, or add the recipe by hand.'),
+          jobId,
+        )
       await sleep(this.timing.pollMs)
     }
   }
   deleteAccount = async () => {
     await this.req('DELETE', '/me')
+  }
+  sendFeedback = async (body: FeedbackBody) => {
+    await this.req('POST', '/feedback', body)
   }
   listAccessRequests = () => this.req<AccessRequest[]>('GET', '/admin/requests')
   decideAccess = async (username: string, approve: boolean) => {
@@ -156,6 +181,7 @@ export class LocalBackend implements Backend {
   async deleteAccount(): Promise<void> {
     localStorage.removeItem(KEY)
   }
+  async sendFeedback(): Promise<void> {} // local mode: no server to send it to
   async importRecipe(): Promise<ImportedRecipe> {
     throw new AppError('cloud_only', {}, 'Recipe import needs the cloud version — see the README to deploy.')
   }

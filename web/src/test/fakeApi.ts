@@ -1,6 +1,6 @@
 // An in-memory stand-in for the Grub Grab HTTP API (the network boundary), plus Cognito's token endpoint.
 import { aggregate } from '../lib/aggregate'
-import type { AccessRequest, ListItem, Recipe } from '../types'
+import type { AccessRequest, FeedbackBody, ListItem, Recipe } from '../types'
 import { CFG, fakeFetch, json, type Handler } from './fakes'
 
 const API = CFG.apiUrl.replace(/\/$/, '')
@@ -18,6 +18,7 @@ export interface ApiState {
     aisles?: Record<string, string>
   }
   requests: AccessRequest[]
+  feedback: FeedbackBody[]
 }
 
 let n = 0
@@ -31,6 +32,7 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
     items: [],
     household: { householdId: 'h1', inviteCode: 'ABCDEFGH23' },
     requests: [],
+    feedback: [],
     ...initial,
   }
   const itemId = (url: URL) => url.pathname.split('/').pop()!
@@ -74,6 +76,10 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
     [`POST ${API}/household/invite`]: () => {
       state.household = { ...state.household, inviteCode: 'ROTATED234' }
       return json(state.household)
+    },
+    [`POST ${API}/feedback`]: (_u, init) => {
+      state.feedback.push(body(init))
+      return json({ id: `fb-${state.feedback.length}` }, 201)
     },
     [`GET ${API}/admin/requests`]: () => json(state.requests),
     [`POST ${API}/admin/requests/decline-pending`]: () => {

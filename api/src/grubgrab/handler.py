@@ -6,6 +6,7 @@ import base64
 import binascii
 import json
 import os
+import time
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
@@ -14,6 +15,8 @@ import boto3
 from . import ai
 from .aggregate import aggregate, combine, normalise_name
 from .aisles import AISLES, MAX_REMEMBERED
+from .errors import ApiError
+from . import feedback
 from .store import INVITE_LENGTH, Store, normalise_invite_code
 
 MAX_TEXT = 200
@@ -39,18 +42,6 @@ def _get_store() -> Store:
     if _store is None:
         _store = Store()
     return _store
-
-
-class ApiError(Exception):
-    """An error for the app. `code` (with `params`) lets the app show it in the person's language
-    (web/src/i18n/locales/*.ts, key "error.<code>"); `message` is the English text."""
-
-    def __init__(self, status: int, code: str, message: str, **params):
-        super().__init__(message)
-        self.status = status
-        self.code = code
-        self.message = message
-        self.params = params
 
 
 def _json_default(value):
@@ -287,6 +278,29 @@ def _delete_account(sub: str, claims: dict, store: Store) -> dict:
     return _resp(200, {"deleted": True, "householdDeleted": household_deleted})
 
 
+def _feedback(store: Store, sub: str, data: dict) -> dict:
+    """A problem report, an automatic error report, or an import's outcome (see feedback.py)."""
+    kind = data.get("kind")
+    if kind not in feedback.KINDS:
+        raise ApiError(400, "feedback_invalid", f"Unknown kind {str(kind)[:20]!r}")
+    hh = store.household_for(sub)
+    job_id = data.get("jobId")
+    job = None
+    if job_id:
+        if not isinstance(job_id, str) or not hh:
+            raise ApiError(404, "import_not_found", "Import not found")
+        job = _require(store.import_job_record(hh, job_id[:64]), "Import")
+    elif kind == "outcome":
+        raise ApiError(400, "feedback_invalid", "An outcome needs its import")
+    if kind != "outcome" and store.count_feedback(sub, kind) > feedback.daily_limit(kind):
+        raise ApiError(429, "feedback_limit", "Too many reports today. Try again tomorrow.")
+    record = feedback.build(data, user=sub, household=hh, job=job, now=time.time())
+    if kind == "outcome" and not store.claim_import_outcome(hh, job_id):
+        return _resp(200, {"recorded": False})  # already recorded once (e.g. sent again after being offline)
+    store.add_feedback(record)
+    return _resp(201, {"id": record["id"]})
+
+
 def _is_admin(claims: dict) -> bool:
     # API Gateway passes list claims as text, e.g. "[admins]" or "[admins other]".
     groups = claims.get("cognito:groups") or []
@@ -339,6 +353,8 @@ def route(event: dict, store: Store) -> dict:
         return _resp(204)
     if route_key == "DELETE /me":
         return _delete_account(sub, claims, store)
+    if route_key == "POST /feedback":  # works before joining a household too (e.g. an error on the welcome screen)
+        return _feedback(store, sub, _body(event))
     if route_key == "POST /household":
         data = _body(event)
         return _resp(200, store.create_household(sub, _language(data) if "language" in data else "en"))

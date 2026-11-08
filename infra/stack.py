@@ -178,6 +178,27 @@ class GrubGrabStack(Stack):
             ),
             removal_policy=RemovalPolicy.RETAIN,  # don't lose recipes on `cdk destroy`
         )
+        # Problem reports, automatic error reports and import outcomes (api/src/grubgrab/feedback.py), apart
+        # from the app's data so they can be queried or exported on their own. Kept a year (TTL).
+        feedback_table = dynamodb.TableV2(
+            self,
+            "FeedbackTable",
+            partition_key=dynamodb.Attribute(name="kind", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            billing=dynamodb.Billing.on_demand(
+                max_read_request_units=DB_MAX_READS_PER_SECOND, max_write_request_units=DB_MAX_WRITES_PER_SECOND
+            ),
+            time_to_live_attribute="expiresAt",
+            global_secondary_indexes=[
+                dynamodb.GlobalSecondaryIndexPropsV2(  # a person's records, deleted with their account
+                    index_name="byUser",
+                    partition_key=dynamodb.Attribute(name="userId", type=dynamodb.AttributeType.STRING),
+                    sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+                    projection_type=dynamodb.ProjectionType.KEYS_ONLY,
+                )
+            ],
+            removal_policy=RemovalPolicy.RETAIN,
+        )
 
         # ---- auth -----------------------------------------------------------------
         # Google is the only way in: no passwords, no self-service email sign-up.
@@ -276,10 +297,11 @@ class GrubGrabStack(Stack):
             memory_size=256,
             timeout=Duration.seconds(25),  # building a long list can be slowed by the database cap
             reserved_concurrent_executions=API_MAX_CONCURRENCY,
-            environment={"TABLE_NAME": table.table_name},
+            environment={"TABLE_NAME": table.table_name, "FEEDBACK_TABLE": feedback_table.table_name},
             log_group=logs.LogGroup(self, "ApiFnLogs", retention=LOG_RETENTION, removal_policy=RemovalPolicy.DESTROY),
         )
         table.grant_read_write_data(fn)
+        feedback_table.grant_read_write_data(fn)  # write reports; query and delete a person's on account deletion
         # "Fill from link": AI recipe import, provider and model chosen in settings.local.json.
         # The API only starts an import job (and checks the allowance); a separate worker does the slow AI
         # call in the background, and only the worker can reach the AI provider.
@@ -451,6 +473,8 @@ class GrubGrabStack(Stack):
             allow_origins=[u.rstrip("/") for u in app_urls],
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
             allow_headers=["authorization", "content-type"],
+            # The app keeps each response's request id in its journey, to match a report with the server logs.
+            expose_headers=["apigw-requestid"],
             max_age=int(Duration.days(1).to_seconds()),
         )
         integration = integrations.HttpLambdaIntegration("ApiIntegration", fn)
@@ -461,6 +485,7 @@ class GrubGrabStack(Stack):
             "/household/invite": [apigw.HttpMethod.POST],
             "/household/recipe-language": [apigw.HttpMethod.PUT],
             "/household/aisles": [apigw.HttpMethod.PUT],
+            "/feedback": [apigw.HttpMethod.POST],
             "/recipes": [apigw.HttpMethod.GET, apigw.HttpMethod.POST],
             "/recipes/import": [apigw.HttpMethod.POST],
             "/recipes/import/{id}": [apigw.HttpMethod.GET],

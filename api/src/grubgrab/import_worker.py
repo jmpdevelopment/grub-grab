@@ -22,18 +22,19 @@ UNEXPECTED = "Couldn't read that page right now. Try again, or add the recipe by
 
 def run(event: dict, store: Store, get_extractor: Callable[[], ai.RecipeExtractor]) -> None:
     household, job, link = event["householdId"], event["jobId"], event["link"]
+    data = None
     try:
         known_tags = [t for r in store.list_recipes(household) for t in r.get("tags") or []]
         # The page's own recipe data, when it has some, saves the AI reading the whole page.
         data = page.recipe_data(link)
-        draft = get_extractor().extract(link, known_tags, event.get("language", "en"), data)
+        draft, details = get_extractor().extract(link, known_tags, event.get("language", "en"), data)
     except ai.ExtractionError as err:
-        store.finish_import_job(household, job, error=str(err), error_code=err.code)
+        store.finish_import_job(household, job, error=str(err), error_code=err.code, details=err.details, page_data=data)
     except Exception:  # a bug or an outage: record it for the app, keep the details in the log
         log.exception("recipe import job %s failed", job)
-        store.finish_import_job(household, job, error=UNEXPECTED, error_code="import_unavailable")
+        store.finish_import_job(household, job, error=UNEXPECTED, error_code="import_unavailable", page_data=data)
     else:
-        store.finish_import_job(household, job, recipe=draft)
+        store.finish_import_job(household, job, recipe=draft, details=details, page_data=data)
 
 
 _store: Store | None = None

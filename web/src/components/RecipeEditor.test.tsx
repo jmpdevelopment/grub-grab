@@ -1,6 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import { AppError } from '../i18n/errors'
 import type { Recipe } from '../types'
 import { RecipeEditor } from './RecipeEditor'
 
@@ -19,7 +20,7 @@ function setup(props: Partial<Parameters<typeof RecipeEditor>[0]> = {}) {
   const onSave = vi.fn().mockResolvedValue(undefined)
   const onCancel = vi.fn()
   render(<RecipeEditor recipe={null} onSave={onSave} onCancel={onCancel} {...props} />)
-  return { user: userEvent.setup(), onSave, onCancel }
+  return { user: userEvent.setup(), onSave: (props.onSave ?? onSave) as typeof onSave, onCancel }
 }
 
 const names = () => screen.getAllByPlaceholderText('Ingredient') as HTMLInputElement[]
@@ -245,6 +246,125 @@ describe('RecipeEditor', () => {
       fail(new Error("Couldn't find a recipe on that page."))
       expect(await screen.findByText("Couldn't find a recipe on that page.")).toBeInTheDocument()
       expect(fill()).toBeEnabled()
+    })
+  })
+
+  describe('reporting a problem with an import', () => {
+    const DRAFT = {
+      recipe: {
+        title: 'Curry',
+        servings: 4,
+        link: 'https://e.com/curry',
+        tags: ['chicken'],
+        ingredients: [
+          { name: 'chicken', quantity: 6, unit: '', aisle: 'meat' },
+          { name: 'onion', quantity: 1, unit: '', aisle: 'produce' },
+        ],
+      },
+      remaining: 9,
+      jobId: 'job1',
+    }
+    const reportLink = () => screen.queryByRole('button', { name: 'Something wrong? Report it' })
+
+    async function imported(extra: Partial<Parameters<typeof RecipeEditor>[0]> = {}) {
+      const onFeedback = vi.fn().mockResolvedValue('sent')
+      const onImportOutcome = vi.fn()
+      const ctx = setup({ recipe: { ...PASTA, title: '', servings: null, ingredients: [], link: 'https://e.com/curry' }, onImport: vi.fn().mockResolvedValue(DRAFT), onFeedback, onImportOutcome, ...extra })
+      await ctx.user.click(screen.getByRole('button', { name: '✨ Fill from link' }))
+      await screen.findByText(/Filled in from the page/)
+      return { ...ctx, onFeedback, onImportOutcome }
+    }
+
+    it('fix it, tap Report: what was fixed is already ticked and marked', async () => {
+      const { user, onFeedback } = await imported()
+      await user.clear(screen.getAllByPlaceholderText('Qty')[0])
+      await user.type(screen.getAllByPlaceholderText('Qty')[0], '8')
+      await user.click(reportLink()!)
+      expect(screen.getByRole('button', { name: 'Wrong amounts' })).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByRole('checkbox', { name: 'chicken' })).toBeChecked()
+      expect(screen.getByRole('checkbox', { name: 'onion' })).not.toBeChecked()
+      await user.click(screen.getByRole('button', { name: 'Send' }))
+      expect(onFeedback).toHaveBeenCalledWith({
+        kind: 'import',
+        jobId: 'job1',
+        problems: ['amounts'],
+        marked: ['chicken'],
+        note: '',
+        edits: expect.objectContaining({ amounts: ['chicken'], renamed: [], added: [] }),
+      })
+      await user.click(await screen.findByRole('button', { name: 'Close' }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+
+    it('a failed import can be reported too, with its error', async () => {
+      const onFeedback = vi.fn().mockResolvedValue('sent')
+      const failure = Object.assign(new AppError('no_recipe', {}, "Couldn't find a recipe on that page."), { jobId: 'job2' })
+      const { user } = setup({ recipe: { ...PASTA, ingredients: [], link: 'https://e.com/x' }, onImport: vi.fn().mockRejectedValue(failure), onFeedback })
+      await user.click(screen.getByRole('button', { name: '✨ Fill from link' }))
+      await user.click(await screen.findByRole('button', { name: 'Something wrong? Report it' }))
+      await user.click(screen.getByRole('button', { name: 'Didn’t read the page' }))
+      await user.click(screen.getByRole('button', { name: 'Send' }))
+      expect(onFeedback).toHaveBeenCalledWith({ kind: 'import', jobId: 'job2', problems: ['unread'], note: '', errorCode: 'no_recipe' })
+    })
+
+    it('an import that never started can be reported without a job', async () => {
+      const onFeedback = vi.fn().mockResolvedValue('sent')
+      const { user } = setup({ recipe: { ...PASTA, ingredients: [], link: 'https://e.com/x' }, onImport: vi.fn().mockRejectedValue(new TypeError('Failed to fetch')), onFeedback })
+      await user.click(screen.getByRole('button', { name: '✨ Fill from link' }))
+      await user.click(await screen.findByRole('button', { name: 'Something wrong? Report it' }))
+      await user.click(screen.getByRole('button', { name: 'Something else' }))
+      await user.click(screen.getByRole('button', { name: 'Send' }))
+      expect(onFeedback).toHaveBeenCalledWith(expect.objectContaining({ jobId: undefined, errorCode: 'unknown' }))
+    })
+
+    it('no report links without somewhere to send them, or for other errors', async () => {
+      await imported({ onFeedback: undefined })
+      expect(reportLink()).not.toBeInTheDocument()
+    })
+
+    it('saving records the outcome: unchanged', async () => {
+      const recipe = { ...DRAFT.recipe, servings: null, ingredients: [...DRAFT.recipe.ingredients, { name: 'salt', quantity: null, unit: '' }] }
+      const { user, onImportOutcome, onSave } = await imported({ onImport: vi.fn().mockResolvedValue({ ...DRAFT, recipe }) })
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      expect(onSave).toHaveBeenCalled()
+      expect(onImportOutcome).toHaveBeenCalledWith('job1', 'unchanged', {})
+    })
+
+    it('saving records the outcome: edited, as counts', async () => {
+      const { user, onImportOutcome } = await imported()
+      await user.clear(screen.getByPlaceholderText('e.g. Chicken curry'))
+      await user.type(screen.getByPlaceholderText('e.g. Chicken curry'), 'Chicken curry')
+      await user.click(screen.getByRole('button', { name: 'Remove onion' }))
+      await user.type(screen.getByPlaceholderText('Add a tag'), 'quick')
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      expect(onImportOutcome).toHaveBeenCalledWith('job1', 'edited', { title: 1, tagsAdded: 1, removed: 1 })
+    })
+
+    it('a failed save records nothing yet', async () => {
+      const { user, onImportOutcome } = await imported({ onSave: vi.fn().mockRejectedValue(new Error('Server down')) })
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      await screen.findByText('Server down')
+      expect(onImportOutcome).not.toHaveBeenCalled()
+    })
+
+    it('leaving without saving, or importing again, abandons it', async () => {
+      const { user, onImportOutcome, onCancel } = await imported()
+      vi.spyOn(window, 'confirm').mockReturnValue(true) // "replace the ingredients?"
+      await user.click(screen.getByRole('button', { name: '✨ Fill from link' })) // again: replaces the first
+      await screen.findByText(/Filled in from the page/)
+      expect(onImportOutcome).toHaveBeenCalledWith('job1', 'abandoned', {})
+      await user.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(onImportOutcome).toHaveBeenCalledTimes(2)
+      expect(onCancel).toHaveBeenCalled()
+    })
+
+    it('typed recipes have no outcome', async () => {
+      const onImportOutcome = vi.fn()
+      const { user } = setup({ onImportOutcome })
+      await user.type(screen.getByPlaceholderText('e.g. Chicken curry'), 'Toast')
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      await user.click(screen.getByRole('button', { name: 'Cancel' }))
+      expect(onImportOutcome).not.toHaveBeenCalled()
     })
   })
 

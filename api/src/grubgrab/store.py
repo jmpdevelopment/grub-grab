@@ -12,7 +12,11 @@ Key layout:
   PK=ACCESS            SK=REQ#<username>   -> email, name, status (pending/approved/declined), requestedAt
   PK=ACCESS            SK=NOTIFY           -> lastAt — at most one "new request" email per hour
   PK=HH#<id>           SK=AI#<yyyy-mm>     -> imports, expiresAt (TTL) — AI recipe imports this month
-  PK=HH#<id>           SK=IMPORT#<id>      -> status, link, recipe | error, expiresAt (TTL) — one AI import job
+  PK=HH#<id>           SK=IMPORT#<id>      -> status, link, recipe | error, details, pageData, outcomeAt, expiresAt (TTL)
+                                              — one AI import job
+  PK=USER#<sub>        SK=FEEDBACK#<kind>#<day> -> reports, expiresAt (TTL) — daily report limit
+
+Problem reports and import outcomes live in a separate table (FEEDBACK_TABLE, see feedback.py).
 """
 
 from __future__ import annotations
@@ -39,7 +43,8 @@ PENDING_REQUEST_TTL = 30 * 24 * 3600  # unanswered sign-up requests disappear af
 DECLINED_REQUEST_TTL = 365 * 24 * 3600  # a decline sticks for a year
 NOTIFY_EVERY_SECONDS = 3600
 _ACCESS = "ACCESS"
-IMPORT_JOB_TTL = 24 * 3600  # import results are only needed until the app has picked them up
+IMPORT_JOB_TTL = 30 * 24 * 3600  # long enough for a problem report about the import to include its details
+FEEDBACK_TTL = 365 * 24 * 3600  # problem reports and import outcomes are kept a year
 
 
 def _strip_keys(item: dict) -> dict:
@@ -65,10 +70,12 @@ class Store:
         table=None,
         new_invite_code: Callable[[], str] = random_invite_code,
         clock: Callable[[], float] = time.time,
+        feedback_table=None,
     ):
         if table is None:
             table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
         self.table = table
+        self._feedback_table = feedback_table
         self._new_invite_code = new_invite_code
         self._clock = clock
 
@@ -201,14 +208,26 @@ class Store:
         return job_id
 
     def finish_import_job(
-        self, household_id: str, job_id: str, *, recipe: dict | None = None, error: str = "", error_code: str = "unexpected"
+        self,
+        household_id: str,
+        job_id: str,
+        *,
+        recipe: dict | None = None,
+        error: str = "",
+        error_code: str = "unexpected",
+        details: dict | None = None,
+        page_data: dict | None = None,
     ) -> None:
+        """Record the result. `details` (model, tokens, request id...) and `page_data` (the page's own recipe data)
+        are kept for problem reports only; the app never gets them back."""
+        # DynamoDB stores numbers as Decimal, so round-trip floats (draft quantities, costs) through JSON.
+        dec = lambda value: json.loads(json.dumps(value), parse_float=Decimal)  # noqa: E731
         if recipe is not None:
-            # DynamoDB stores numbers as Decimal, so round-trip the draft (float quantities) through JSON.
-            stored = json.loads(json.dumps(recipe), parse_float=Decimal)
-            update, values = "SET #s = :s, recipe = :r", {":s": "done", ":r": stored}
+            update, values = "SET #s = :s, recipe = :r", {":s": "done", ":r": dec(recipe)}
         else:
             update, values = "SET #s = :s, #e = :e, errorCode = :c", {":s": "failed", ":e": error, ":c": error_code}
+        update += ", details = :d, pageData = :p"
+        values.update({":d": dec(details or {}), ":p": dec(page_data) if page_data else None})
         self.table.update_item(
             Key={"PK": f"HH#{household_id}", "SK": f"IMPORT#{job_id}"},
             UpdateExpression=update,
@@ -221,6 +240,24 @@ class Store:
         if not item:
             return None
         return {k: item[k] for k in ("status", "recipe", "error", "errorCode") if k in item}
+
+    def import_job_record(self, household_id: str, job_id: str) -> dict | None:
+        """Everything kept about an import, for a problem report (or None if it has gone)."""
+        item = self.table.get_item(Key={"PK": f"HH#{household_id}", "SK": f"IMPORT#{job_id}"}, ConsistentRead=True).get("Item")
+        return _strip_keys(item) if item else None
+
+    def claim_import_outcome(self, household_id: str, job_id: str) -> bool:
+        """Mark that an import's outcome (saved or abandoned) was recorded; False if it already was, or the job is gone."""
+        try:
+            self.table.update_item(
+                Key={"PK": f"HH#{household_id}", "SK": f"IMPORT#{job_id}"},
+                UpdateExpression="SET outcomeAt = :t",
+                ConditionExpression="attribute_exists(PK) AND attribute_not_exists(outcomeAt)",
+                ExpressionAttributeValues={":t": self._now()},
+            )
+            return True
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
 
     def record_join_attempt(self, user_sub: str) -> int:
         """Count a join attempt in the current hour; returns attempts so far. Old windows expire via TTL."""
@@ -302,7 +339,43 @@ class Store:
             for item in self._query(f"USER#{user_sub}"):  # profile and join-attempt counters
                 batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
             batch.delete_item(Key={"PK": _ACCESS, "SK": f"REQ#{username}"})  # signing in again means asking again
+        self.delete_user_feedback(user_sub)  # their problem reports and import outcomes
         return household_deleted
+
+    # ---- problem reports and import outcomes (their own table) --------------
+
+    @property
+    def feedback_table(self):
+        if self._feedback_table is None:
+            self._feedback_table = boto3.resource("dynamodb").Table(os.environ["FEEDBACK_TABLE"])
+        return self._feedback_table
+
+    def add_feedback(self, record: dict) -> None:
+        self.feedback_table.put_item(Item=record)
+
+    def count_feedback(self, user_sub: str, kind: str) -> int:
+        """Count a report today (automatic error reports separately from the rest); returns today's total."""
+        day = self._now() // 86400
+        group = "error" if kind == "error" else "report"
+        resp = self.table.update_item(
+            Key={"PK": f"USER#{user_sub}", "SK": f"FEEDBACK#{group}#{day}"},
+            UpdateExpression="ADD reports :one SET expiresAt = if_not_exists(expiresAt, :exp)",
+            ExpressionAttributeValues={":one": 1, ":exp": (day + 2) * 86400},
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(resp["Attributes"]["reports"])
+
+    def delete_user_feedback(self, user_sub: str) -> None:
+        keys, kwargs = [], {"IndexName": "byUser", "KeyConditionExpression": Key("userId").eq(user_sub)}
+        while True:
+            resp = self.feedback_table.query(**kwargs)
+            keys += [{"kind": i["kind"], "sk": i["sk"]} for i in resp.get("Items", [])]
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        with self.feedback_table.batch_writer() as batch:
+            for key in keys:
+                batch.delete_item(Key=key)
 
     def count_recipes(self, household_id: str) -> int:
         return len(self._query_prefix(household_id, "RECIPE#"))

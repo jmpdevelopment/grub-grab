@@ -174,6 +174,7 @@ def test_cors_is_narrow(template):
     _, cors = _client_and_cors(template)
     assert cors["AllowMethods"] == ["GET", "POST", "PUT", "PATCH", "DELETE"]
     assert cors["AllowHeaders"] == ["authorization", "content-type"]
+    assert cors["ExposeHeaders"] == ["apigw-requestid"]  # only the request id, for matching reports with logs
 
 
 # ---- 5. no user enumeration ---------------------------------------------------------------
@@ -400,9 +401,29 @@ def test_spend_caps(template):
     assert fns["grubgrab.handler.lambda_handler"]["ReservedConcurrentExecutions"] == API_MAX_CONCURRENCY
     assert fns["grubgrab.signup.lambda_handler"]["ReservedConcurrentExecutions"] == 2
     assert fns["grubgrab.signup.lambda_handler"]["Timeout"] <= 5  # Cognito's limit for triggers
-    table = only(template, "AWS::DynamoDB::GlobalTable")
-    assert table["WriteOnDemandThroughputSettings"] == {"MaxWriteRequestUnits": DB_MAX_WRITES_PER_SECOND}
-    assert table["Replicas"][0]["ReadOnDemandThroughputSettings"] == {"MaxReadRequestUnits": DB_MAX_READS_PER_SECOND}
+    tables = [t["Properties"] for t in template.find_resources("AWS::DynamoDB::GlobalTable").values()]
+    assert len(tables) == 2  # the app's data, and problem reports
+    for table in tables:
+        assert table["WriteOnDemandThroughputSettings"] == {"MaxWriteRequestUnits": DB_MAX_WRITES_PER_SECOND}
+        assert table["Replicas"][0]["ReadOnDemandThroughputSettings"] == {"MaxReadRequestUnits": DB_MAX_READS_PER_SECOND}
+
+
+def test_problem_reports_have_their_own_table(template):
+    tables = template.find_resources("AWS::DynamoDB::GlobalTable")
+    [(name, feedback)] = [(k, v) for k, v in tables.items() if k.startswith("FeedbackTable")]
+    props = feedback["Properties"]
+    assert props["KeySchema"] == [{"AttributeName": "kind", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}]
+    assert props["TimeToLiveSpecification"] == {"AttributeName": "expiresAt", "Enabled": True}
+    [index] = props["GlobalSecondaryIndexes"]
+    assert index["IndexName"] == "byUser" and index["Projection"] == {"ProjectionType": "KEYS_ONLY"}
+    assert feedback["DeletionPolicy"] == "Retain"
+    env = functions(template)["grubgrab.handler.lambda_handler"]["Environment"]["Variables"]
+    assert env["FEEDBACK_TABLE"] == {"Ref": name}
+    template.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "POST /feedback", "AuthorizationType": "JWT"})
+    # Only the API writes reports; the import worker and sign-up trigger can't touch them.
+    for fn, props_ in functions(template).items():
+        if fn != "grubgrab.handler.lambda_handler":
+            assert "FEEDBACK_TABLE" not in json.dumps(props_)
 
 
 def test_no_email_alerts_without_an_address(template):

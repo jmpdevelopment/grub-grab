@@ -1,8 +1,10 @@
 import { type ReactNode, useState } from 'react'
 import { useI18n, type Lang } from '../i18n'
+import type { Report, SendResult } from '../lib/feedback'
 import { formatInviteCode } from '../lib/invite'
 import type { Household } from '../types'
 import { DeleteAccount } from './DeleteAccount'
+import { FeedbackSheet } from './FeedbackSheet'
 import { JoinForm } from './JoinForm'
 import { LanguagePicker } from './LanguagePicker'
 
@@ -18,6 +20,8 @@ interface Props {
   onDeleteAccount?: () => Promise<void>
   /** Change what "Fill from link" writes in, for the whole household (cloud only). */
   onRecipeLanguage?: (language: Lang) => Promise<void>
+  /** "Report a problem" (cloud only: local mode has nowhere to send it). */
+  onFeedback?: (report: Report) => Promise<SendResult>
 }
 
 export function SettingsView({
@@ -30,9 +34,11 @@ export function SettingsView({
   adminPanel,
   onDeleteAccount,
   onRecipeLanguage,
+  onFeedback,
 }: Props) {
   const { t, errorText } = useI18n()
   const [shareMsg, setShareMsg] = useState<string | null>(null)
+  const [reporting, setReporting] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const rotate = async () => {
@@ -102,12 +108,22 @@ export function SettingsView({
             {onDeleteAccount && <DeleteAccount admin={Boolean(household?.admin)} onDelete={onDeleteAccount} />}
           </>
         )}
+        {onFeedback && (
+          <section className="panel">
+            <h3>{t('feedback.reportProblem')}</h3>
+            <p className="muted">{t('feedback.reportText')}</p>
+            <button className="btn secondary" onClick={() => setReporting(true)}>{t('feedback.reportProblem')}</button>
+          </section>
+        )}
         <p className="legal">
           <a href="/privacy.html" target="_blank" rel="noopener">
             {t('app.privacy')}
           </a>
         </p>
       </div>
+      {reporting && (
+        <FeedbackSheet kind="general" onSend={(answer) => onFeedback!({ kind: 'general', ...answer })} onClose={() => setReporting(false)} />
+      )}
     </>
   )
 }

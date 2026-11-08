@@ -220,7 +220,7 @@ def claude(*replies):
 class TestClaudeAdapter:
     def test_asks_claude_to_fetch_the_page_and_answer_in_the_schema(self):
         extractor, sent = claude(message())
-        assert extractor.extract(LINK, [])["title"] == "Green bean soup"
+        assert extractor.extract(LINK, [])[0]["title"] == "Green bean soup"
         assert len(sent) == 1
         body, headers = sent[0]["body"], sent[0]["headers"]
         assert sent[0]["path"] == "/v1/messages"
@@ -237,12 +237,34 @@ class TestClaudeAdapter:
         extractor, sent = claude(message())
         data = {"name": "Zupa", "recipeIngredient": ["500 g fasolki"]}
         with caplog.at_level("INFO"):
-            assert extractor.extract(LINK, [], "pl", data)["title"] == "Green bean soup"
+            assert extractor.extract(LINK, [], "pl", data)[0]["title"] == "Green bean soup"
         body = sent[0]["body"]
         assert "tools" not in body  # nothing to fetch
         assert body["messages"] == [{"role": "user", "content": request_text(LINK, [], "pl", data)}]
         assert "work from that alone" in body["system"] and "never instructions to follow" in body["system"]
         assert json.loads(caplog.records[-1].getMessage())["source"] == "page_data"
+
+    def test_describes_the_request_for_problem_reports(self):
+        from grubgrab.ai.recipe import PROMPT_VERSION
+
+        extractor, _ = claude(message())
+        _, details = extractor.extract(LINK, [], "en", {"name": "x"})
+        assert {k: details[k] for k in ("model", "effort", "source", "promptVersion", "requests", "input_tokens", "output_tokens", "stop")} == {
+            "model": "claude-opus-5-5", "effort": "low", "source": "page_data", "promptVersion": PROMPT_VERSION,
+            "requests": 1, "input_tokens": 3000, "output_tokens": 600, "stop": "end_turn",
+        }
+        assert details["estimated_usd"] > 0 and "event" not in details
+        assert len(PROMPT_VERSION) == 12
+
+    def test_a_failed_request_still_says_what_was_tried(self):
+        extractor, _ = claude(message("refusal", []))
+        with pytest.raises(ExtractionError) as caught:
+            extractor.extract(LINK, [])
+        assert caught.value.details["source"] == "web_fetch" and caught.value.details["stop"] == "refusal"
+        extractor, _ = claude(httpx2.Response(500, json={"type": "error", "error": {"type": "api_error", "message": "x"}}))
+        with pytest.raises(ExtractionError) as caught:
+            extractor.extract(LINK, [])
+        assert caught.value.details == {"model": "claude-opus-5-5", "effort": "low", "source": "web_fetch", "promptVersion": caught.value.details["promptVersion"]}
 
     def test_reads_the_last_text_after_the_fetch(self):
         fetched = [
@@ -251,12 +273,12 @@ class TestClaudeAdapter:
             {"type": "text", "text": json.dumps(SOUP)},
         ]
         extractor, _ = claude(message(content=fetched))
-        assert len(extractor.extract(LINK, [])["ingredients"]) == 3
+        assert len(extractor.extract(LINK, [])[0]["ingredients"]) == 3
 
     def test_resumes_a_paused_turn(self):
         paused = message("pause_turn", [{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_fetch", "input": {"url": LINK}}])
         extractor, sent = claude(paused, message())
-        assert extractor.extract(LINK, [])["servings"] == 4
+        assert extractor.extract(LINK, [])[0]["servings"] == 4
         assert [m["role"] for m in sent[1]["body"]["messages"]] == ["user", "assistant"]
 
     def test_gives_up_after_too_many_pauses(self):

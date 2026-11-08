@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   plugins: [react()],
+  define: { __APP_VERSION__: JSON.stringify('test-version') }, // the commit, in real builds (vite.config.ts)
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],

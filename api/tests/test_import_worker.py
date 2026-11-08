@@ -20,7 +20,7 @@ class Extractor:
         self.page_data = page_data
         if isinstance(self.result, Exception):
             raise self.result
-        return {**self.result, "link": link}
+        return {**self.result, "link": link}, {"model": "test-model", "source": "page_data" if page_data else "web_fetch"}
 
 
 @pytest.fixture(autouse=True)
@@ -111,3 +111,29 @@ def test_lambda_handler_sets_up_once_per_container(job, monkeypatch):
     import_worker.lambda_handler(event(hh, second), None)
     assert made == [1] and isinstance(import_worker._store, Store)
     assert store.get_import_job(hh, second)["status"] == "done"
+
+
+def test_keeps_the_ai_requests_details_and_the_pages_data_for_problem_reports(job, monkeypatch):
+    store, hh, job_id = job
+    data = {"name": "Soup", "recipeIngredient": ["1 leek"]}
+    monkeypatch.setattr(page, "recipe_data", lambda link: data)
+    run(event(hh, job_id), store, lambda: Extractor(DRAFT))
+    record = store.import_job_record(hh, job_id)
+    assert record["details"] == {"model": "test-model", "source": "page_data"} and record["pageData"] == data
+    assert store.get_import_job(hh, job_id) == {"status": "done", "recipe": DRAFT}  # the app never gets them
+
+
+def test_a_failure_keeps_what_was_learned(job):
+    store, hh, job_id = job
+    err = ai.ExtractionError("unreadable", "Couldn't read a recipe from that page.")
+    err.details = {"model": "test-model", "request_id": "req_1"}
+    run(event(hh, job_id), store, lambda: Extractor(err))
+    record = store.import_job_record(hh, job_id)
+    assert record["details"] == {"model": "test-model", "request_id": "req_1"} and record["pageData"] is None
+
+
+def test_an_unexpected_failure_has_no_details(job):
+    store, hh, job_id = job
+    run(event(hh, job_id), store, lambda: Extractor(RuntimeError("bug")))
+    assert store.import_job_record(hh, job_id)["details"] == {}
+    assert store.import_job_record(hh, "missing") is None

@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { CFG, fakeFetch, json, saveTokens } from '../test/fakes'
 import type { RecipeInput } from '../types'
-import { AuthRequiredError, CloudBackend, LocalBackend } from './backend'
+import { AuthRequiredError, CloudBackend, jobIdOf, LocalBackend } from './backend'
+import { journey } from './journey'
 
 const API = 'https://api.example.com'
 const PASTA: RecipeInput = {
@@ -163,6 +164,35 @@ describe('CloudBackend', () => {
   })
 })
 
+describe('CloudBackend: the journey', () => {
+  it('notes each request: route without ids, result, time and request id', async () => {
+    saveTokens({ accessToken: 'tok' })
+    fakeFetch({
+      [`GET ${API}/list`]: () => new Response('[]', { status: 200, headers: { 'apigw-requestid': 'Req-1' } }),
+      [`DELETE ${API}/list/items/abcdef123456`]: () => new Response(null, { status: 204 }),
+      [`POST ${API}/feedback`]: () => json({ id: 'f1' }, 201),
+    })
+    const b = new CloudBackend(CFG)
+    await b.getList()
+    await b.deleteItem('abcdef123456')
+    expect(await b.sendFeedback({ kind: 'general', problems: ['idea'] })).toBeUndefined()
+    const steps = journey()
+    expect(steps.map((s) => s.type === 'api' && [s.route, s.status, s.requestId])).toEqual([
+      ['GET /list', 200, 'Req-1'],
+      ['DELETE /list/items/:id', 204, undefined],
+      ['POST /feedback', 201, undefined],
+    ])
+    expect(steps.every((s) => s.type === 'api' && s.ms >= 0)).toBe(true)
+  })
+
+  it('a request that never reached the server is noted as status 0', async () => {
+    saveTokens({ accessToken: 'tok' })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    await expect(new CloudBackend(CFG).getList()).rejects.toThrow('Failed to fetch')
+    expect(journey()).toEqual([expect.objectContaining({ type: 'api', route: 'GET /list', status: 0 })])
+  })
+})
+
 describe('LocalBackend', () => {
   const stored = () => JSON.parse(localStorage.getItem('gg.local')!)
 
@@ -176,6 +206,7 @@ describe('LocalBackend', () => {
     expect(await b.setRecipeLanguage()).toEqual(local)
     await b.createRecipe({ title: 'Soup', servings: null, notes: '', ingredients: [] })
     await expect(b.importRecipe()).rejects.toThrow('Recipe import needs the cloud version')
+    expect(await b.sendFeedback()).toBeUndefined() // nowhere to send it
     await b.deleteAccount() // local mode: wipes this device's data
     expect(await b.listRecipes()).toEqual([])
     expect(await b.listAccessRequests()).toEqual([])
@@ -300,18 +331,24 @@ describe('CloudBackend: Fill from link (background job)', () => {
 
   it('checks until the job is done, then returns the draft', async () => {
     const { calls } = job({ status: 'pending' }, { status: 'pending' }, { status: 'done', recipe: draft })
-    expect(await new CloudBackend(CFG, fast).importRecipe('https://e.com')).toEqual({ recipe: draft, remaining: 7 })
+    expect(await new CloudBackend(CFG, fast).importRecipe('https://e.com')).toEqual({ recipe: draft, remaining: 7, jobId: 'j9' })
     expect(calls.filter((c) => c.url.pathname === '/recipes/import/j9')).toHaveLength(3)
   })
 
   it('reports why a job failed', async () => {
     job({ status: 'pending' }, { status: 'failed', error: "Couldn't find a recipe on that page." })
-    await expect(new CloudBackend(CFG, fast).importRecipe('https://e.com')).rejects.toThrow("Couldn't find a recipe on that page.")
+    const err = await new CloudBackend(CFG, fast).importRecipe('https://e.com').catch((e) => e)
+    expect(err.message).toBe("Couldn't find a recipe on that page.")
+    expect(jobIdOf(err)).toBe('j9') // so a problem report can include the import
   })
 
   it('gives up after a while', async () => {
     job({ status: 'pending' })
-    await expect(new CloudBackend(CFG, { pollMs: 20, timeoutMs: 30 }).importRecipe('https://e.com')).rejects.toThrow('taking too long')
+    const err = await new CloudBackend(CFG, { pollMs: 20, timeoutMs: 30 }).importRecipe('https://e.com').catch((e) => e)
+    expect(err.message).toContain('taking too long')
+    expect(jobIdOf(err)).toBe('j9')
+    expect(jobIdOf(new Error('x'))).toBeUndefined()
+    expect(jobIdOf(null)).toBeUndefined()
   })
 })
 

@@ -2,8 +2,20 @@ import { useState } from 'react'
 import { parseIngredientLine } from '../lib/aggregate'
 import { normaliseLink, safeHref } from '../lib/links'
 import { translate, useI18n, type Lang } from '../i18n'
+import { AppError } from '../i18n/errors'
+import { jobIdOf } from '../lib/backend'
+import type { Report, SendResult } from '../lib/feedback'
+import {
+  anyChanges,
+  changeCounts,
+  compareToDraft,
+  suggestedProblems,
+  touchedIngredients,
+  type RecipeShape,
+} from '../lib/importChanges'
 import { cleanTag } from '../lib/tags'
-import type { ImportedRecipe, Ingredient, Recipe, RecipeInput } from '../types'
+import type { FeedbackBody, ImportedRecipe, Ingredient, Recipe, RecipeInput } from '../types'
+import { FeedbackSheet, type SheetAnswer } from './FeedbackSheet'
 
 interface Props {
   recipe: Recipe | null
@@ -16,6 +28,10 @@ interface Props {
   recipeLanguage?: Lang
   /** "Fill from link": AI reads the page and fills the form for review. Absent when it's switched off. */
   onImport?: (link: string) => Promise<ImportedRecipe>
+  /** Send a problem report about an import (adds device details and recent steps). */
+  onFeedback?: (report: Report) => Promise<SendResult>
+  /** How an import ended: saved as the AI filled it, saved with edits (counts only), or abandoned. */
+  onImportOutcome?: (jobId: string, outcome: NonNullable<FeedbackBody['outcome']>, changes: Record<string, number>) => void
 }
 
 // aisle isn't shown: it comes from "Fill from link" and is kept so the shopping list can group by it.
@@ -28,7 +44,17 @@ const toRow = (i: Ingredient): Row => ({
 })
 const emptyRow = (): Row => ({ name: '', quantity: '', unit: '' })
 
-export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCancel, onImport, recipeLanguage }: Props) {
+export function RecipeEditor({
+  recipe,
+  knownTags = [],
+  onSave,
+  onDelete,
+  onCancel,
+  onImport,
+  onFeedback,
+  onImportOutcome,
+  recipeLanguage,
+}: Props) {
   const { t, errorText, suggestedTags: appLanguageTags } = useI18n()
   const suggestedTags = recipeLanguage ? translate(recipeLanguage, 'tags.suggested').split(', ') : appLanguageTags
   const [title, setTitle] = useState(recipe?.title ?? '')
@@ -44,6 +70,10 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
   const [importing, setImporting] = useState(false)
   const [imported, setImported] = useState<number | null>(null) // imports left this month, after a fill
   const [error, setError] = useState<string | null>(null)
+  // The form exactly as the last import filled it, to see what was changed before saving or reporting.
+  const [baseline, setBaseline] = useState<{ jobId?: string; shape: RecipeShape } | null>(null)
+  const [failure, setFailure] = useState<{ jobId?: string; code: string } | null>(null)
+  const [reporting, setReporting] = useState<'import' | 'importFailed' | null>(null)
 
   const updateRow = (idx: number, patch: Partial<Row>) => {
     setRows((prev) => {
@@ -82,20 +112,53 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
     setImporting(true)
     setError(null)
     setImported(null)
+    setFailure(null)
     try {
-      const { recipe: draft, remaining } = await onImport!(openHref!)
-      setTitle((current) => current.trim() || draft.title)
-      setServings((current) => current || (draft.servings ? String(draft.servings) : ''))
+      const { recipe: draft, remaining, jobId } = await onImport!(openHref!)
+      const filled: RecipeShape = {
+        title: title.trim() || draft.title,
+        servings: servings ? Number(servings) : (draft.servings ?? null),
+        tags: (draft.tags ?? []).reduce(withTag, tags), // suggestions join yours
+        ingredients: draft.ingredients,
+      }
+      setTitle(filled.title)
+      setServings(filled.servings ? String(filled.servings) : '')
       setLink(draft.link)
-      setTags((current) => (draft.tags ?? []).reduce(withTag, current)) // suggestions join yours
+      setTags(filled.tags)
       setRows([...draft.ingredients.map(toRow), emptyRow()])
       setImported(remaining)
+      if (baseline?.jobId) onImportOutcome?.(baseline.jobId, 'abandoned', {}) // replaced by this one
+      setBaseline({ jobId, shape: filled })
     } catch (e) {
       setError(errorText(e))
+      setFailure({ jobId: jobIdOf(e), code: e instanceof AppError ? e.code : 'unknown' })
     } finally {
       setImporting(false)
     }
   }
+
+  /** The form as it is now, in the same shape as `baseline`. */
+  const current = (): RecipeShape => ({
+    title,
+    servings: servings ? Number(servings) : null,
+    tags,
+    ingredients: rows
+      .filter((r) => r.name.trim())
+      .map((r) => {
+        const q = r.quantity.trim().replace(',', '.')
+        return { name: r.name.trim(), quantity: q ? Number(q) : null, unit: r.unit.trim() }
+      }),
+  })
+
+  const cancel = () => {
+    if (baseline?.jobId) onImportOutcome?.(baseline.jobId, 'abandoned', {})
+    onCancel()
+  }
+
+  const sendReport = (answer: SheetAnswer) =>
+    reporting === 'import'
+      ? onFeedback!({ kind: 'import', jobId: baseline!.jobId, ...answer, edits: compareToDraft(baseline!.shape, current()) })
+      : onFeedback!({ kind: 'import', jobId: failure!.jobId, problems: answer.problems, note: answer.note, errorCode: failure!.code })
 
   const save = async () => {
     if (!title.trim()) return setError(t('editor.needTitle'))
@@ -114,22 +177,32 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
       // A tag still being typed counts, so it isn't lost by tapping Save straight away.
       const allTags = withTag(tags, tagDraft)
       await onSave({ title: title.trim(), servings: servings ? Number(servings) : null, notes, link: cleanLink, tags: allTags, ingredients })
+      if (baseline?.jobId) {
+        const changes = compareToDraft(baseline.shape, { ...current(), tags: allTags })
+        onImportOutcome?.(baseline.jobId, anyChanges(changes) ? 'edited' : 'unchanged', changeCounts(changes))
+      }
     } catch (e) {
       setError(errorText(e))
       setBusy(false)
     }
   }
 
+  // What was changed since the import, for pre-ticking the report (only while reporting on it).
+  const edits = reporting === 'import' ? compareToDraft(baseline!.shape, current()) : null
+
   return (
     <div className="editor">
       <header className="bar">
-        <button className="link" onClick={onCancel}>{t('editor.cancel')}</button>
+        <button className="link" onClick={cancel}>{t('editor.cancel')}</button>
         <h2>{recipe ? t('editor.edit') : t('editor.new')}</h2>
         <button className="link strong" onClick={save} disabled={busy}>{t('editor.save')}</button>
       </header>
 
       <div className="content">
         {error && <p className="error">{error}</p>}
+        {error && failure && onFeedback && (
+          <button className="report-link" onClick={() => setReporting('importFailed')}>{t('feedback.reportLink')}</button>
+        )}
         <div className="field">
           <label htmlFor="recipe-link">{t('editor.linkLabel')}</label>
           <div className="link-row">
@@ -158,7 +231,14 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
             ) : (
               <p className="hint">{t('editor.fillHint')}</p>
             ))}
-          {imported !== null && <p className="hint">{t('editor.filled', { count: imported })}</p>}
+          {imported !== null && (
+            <p className="hint">
+              {t('editor.filled', { count: imported })}{' '}
+              {onFeedback && (
+                <button className="report-link" onClick={() => setReporting('import')}>{t('feedback.reportLink')}</button>
+              )}
+            </p>
+          )}
         </div>
         <label className="field">
           <span>{t('editor.titleLabel')}</span>
@@ -257,6 +337,16 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
           </button>
         )}
       </div>
+      {reporting && (
+        <FeedbackSheet
+          kind={reporting}
+          ingredients={baseline?.shape.ingredients.map((i) => i.name)}
+          suggested={edits ? suggestedProblems(edits) : []}
+          premarked={edits ? touchedIngredients(edits) : []}
+          onSend={sendReport}
+          onClose={() => setReporting(null)}
+        />
+      )}
     </div>
   )
 }

@@ -17,7 +17,7 @@ import anthropic
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from .recipe import RECIPE_INSTRUCTIONS, RECIPE_SCHEMA, ExtractionError, request_text, to_draft
+from .recipe import PROMPT_VERSION, RECIPE_INSTRUCTIONS, RECIPE_SCHEMA, ExtractionError, request_text, to_draft
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +97,16 @@ class AnthropicExtractor:
             raise ExtractionError("import_setup", "Recipe import isn't working right now (server setup). Add the recipe by hand.") from exc
         return cls._configured(anthropic.Anthropic(api_key=key, timeout=_TIMEOUT_SECONDS, max_retries=0))
 
-    def extract(self, link: str, known_tags: list[str], language: str = "en", page_data: dict | None = None) -> dict:
+    def extract(self, link: str, known_tags: list[str], language: str = "en", page_data: dict | None = None) -> tuple[dict, dict]:
+        source = "page_data" if page_data else "web_fetch"
+        details = {"model": self.model, "effort": self.effort, "source": source, "promptVersion": PROMPT_VERSION}
+        try:
+            return self._extract(link, known_tags, language, page_data, details)
+        except ExtractionError as err:
+            err.details = details  # whatever was learned before it failed
+            raise
+
+    def _extract(self, link: str, known_tags: list[str], language: str, page_data: dict | None, details: dict) -> tuple[dict, dict]:
         messages: list = [{"role": "user", "content": request_text(link, known_tags, language, page_data)}]
         # With the recipe data in hand there's nothing to fetch: a small request, no tool.
         tools = [] if page_data else [{"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 2, "max_content_tokens": 30000}]
@@ -131,8 +140,9 @@ class AnthropicExtractor:
             log.error("Anthropic request failed: %s", exc)
             raise ExtractionError("import_unavailable", "Couldn't read that page right now. Try again, or add the recipe by hand.") from exc
 
-        source = "page_data" if page_data else "web_fetch"
-        log.info(json.dumps(_usage_log(self.model, responses, time.monotonic() - started, source)))
+        usage = _usage_log(self.model, responses, time.monotonic() - started, details["source"])
+        log.info(json.dumps(usage))
+        details.update({k: v for k, v in usage.items() if k not in ("event", "model", "source")})
         if response.stop_reason == "refusal":
             raise ExtractionError("unreadable", "Couldn't read a recipe from that page.")
         if response.stop_reason != "end_turn":  # still paused, or ran out of room
@@ -142,4 +152,4 @@ class AnthropicExtractor:
             answer = json.loads(texts[-1])
         except (IndexError, ValueError) as exc:
             raise ExtractionError("unreadable", "Couldn't read a recipe from that page.") from exc
-        return to_draft(answer, link)
+        return to_draft(answer, link), details

@@ -367,6 +367,82 @@ describe('cloud mode', () => {
   describe('signed in', () => {
     beforeEach(() => saveTokens({ idToken: jwt({ email: 'me@example.com' }) }))
 
+    describe('problem reports', () => {
+      it('report a problem from Settings, with recent steps and the app version', async () => {
+        const { state } = fakeApi({ recipes: [PASTA] })
+        const user = await renderApp()
+        await screen.findByText('Pasta')
+        await user.click(tab(/Settings/))
+        await user.click(screen.getByRole('button', { name: 'Report a problem' }))
+        await user.click(screen.getByRole('button', { name: 'Something broke' }))
+        await user.click(screen.getByRole('button', { name: 'Send' }))
+        expect(await screen.findByText('Thanks, your report was sent.')).toBeInTheDocument()
+        const [report] = state.feedback
+        expect(report).toMatchObject({ kind: 'general', problems: ['broke'], client: { appVersion: 'test-version', screen: 'settings', language: 'en' } })
+        const steps = report.journey as { type: string; name?: string; route?: string; status?: number }[]
+        expect(steps.filter((s) => s.type === 'screen').map((s) => s.name)).toEqual(['loading', 'recipes', 'settings'])
+        expect(steps).toContainEqual(expect.objectContaining({ type: 'api', route: 'GET /recipes', status: 200 }))
+      })
+
+      it('an AI import: report it from the editor, and its outcome is recorded on save', async () => {
+        fakeLocation('http://localhost/')
+        const { state } = fakeApi(
+          {},
+          {
+            'GET /config.json': () => json({ ...CFG, aiImport: true }),
+            [`POST ${CFG.apiUrl}recipes/import`]: () => json({ jobId: 'job7', remaining: 4 }, 202),
+            [`GET ${CFG.apiUrl}recipes/import/job7`]: () =>
+              json({ status: 'done', recipe: { title: 'Soup', servings: 2, link: 'https://e.com/soup', ingredients: [{ name: 'leek', quantity: 1, unit: '', aisle: 'produce' }] } }),
+            [`POST ${CFG.apiUrl}recipes`]: () => json({ id: 'new', title: 'Soup', servings: 2, notes: '', ingredients: [] }, 201),
+          },
+        )
+        const user = await renderApp()
+        await user.click(await screen.findByRole('button', { name: 'Add your first recipe' }))
+        await user.type(screen.getByLabelText('Link'), 'https://e.com/soup')
+        await user.click(screen.getByRole('button', { name: '✨ Fill from link' }))
+        await user.click(await screen.findByRole('button', { name: 'Something wrong? Report it' }))
+        await user.click(screen.getByRole('button', { name: 'Wrong aisles' }))
+        await user.click(screen.getByRole('checkbox', { name: 'leek' }))
+        await user.click(screen.getByRole('button', { name: 'Send' }))
+        await user.click(await screen.findByRole('button', { name: 'Close' }))
+        expect(state.feedback[0]).toMatchObject({ kind: 'import', jobId: 'job7', problems: ['aisles'], marked: ['leek'], client: { screen: 'editor:new' } })
+        await user.click(screen.getByRole('button', { name: 'Save' }))
+        await waitFor(() => expect(state.feedback[1]).toMatchObject({ kind: 'outcome', jobId: 'job7', outcome: 'unchanged' }))
+        expect(state.feedback[1]).not.toHaveProperty('journey')
+      })
+
+      it('unexpected server errors are reported by themselves, once', async () => {
+        const { state } = fakeApi({}, { [`GET ${CFG.apiUrl}list`]: () => new Response('oops', { status: 502 }) })
+        await renderApp()
+        expect(await screen.findByRole('alert')).toHaveTextContent('502')
+        await waitFor(() => expect(state.feedback).toHaveLength(1))
+        expect(state.feedback[0]).toMatchObject({ kind: 'error', error: { code: 'request_failed', where: 'recipes' } })
+        const steps = state.feedback[0].journey as { type: string; route?: string; status?: number }[]
+        expect(steps).toContainEqual(expect.objectContaining({ type: 'api', route: 'GET /list', status: 502 }))
+      })
+
+      it('crashes and stray errors are reported too', async () => {
+        const { state } = fakeApi()
+        await renderApp()
+        await screen.findByText('No recipes yet.')
+        window.dispatchEvent(new ErrorEvent('error', { error: new TypeError('x is undefined'), message: 'x is undefined' }))
+        window.dispatchEvent(new ErrorEvent('error', { message: 'Script error.' }))
+        const rejection = new Event('unhandledrejection') as PromiseRejectionEvent
+        Object.defineProperty(rejection, 'reason', { value: new RangeError('bad') })
+        window.dispatchEvent(rejection)
+        await waitFor(() => expect(state.feedback.map((f) => f.error?.code)).toEqual(['TypeError', 'unknown', 'RangeError']))
+        expect(state.feedback.map((f) => f.error?.where)).toEqual(['window', 'window', 'promise'])
+      })
+
+      it('reports made offline are sent the next time the app opens', async () => {
+        localStorage.setItem('gg.feedbackQueue', JSON.stringify([{ kind: 'general', problems: ['idea'] }]))
+        const { state } = fakeApi()
+        await renderApp()
+        await waitFor(() => expect(state.feedback).toEqual([{ kind: 'general', problems: ['idea'] }]))
+        expect(localStorage.getItem('gg.feedbackQueue')).toBeNull()
+      })
+    })
+
     it('shows the account, invite code, signs out and joins a household', async () => {
       const { calls } = fakeApi({ recipes: [PASTA] })
       const user = await renderApp()

@@ -24,6 +24,24 @@ export type RecipeInput = Omit<Recipe, 'id'>
 export interface ImportedRecipe {
   recipe: { title: string; servings: number | null; link: string; tags?: string[]; ingredients: Ingredient[] }
   remaining: number // imports left for the household this month
+  /** The server's import job: a problem report or the import's outcome refers to it. */
+  jobId?: string
+}
+
+/** A problem report, automatic error report or import outcome (POST /feedback; see lib/feedback). */
+export interface FeedbackBody {
+  kind: 'import' | 'general' | 'error' | 'outcome'
+  jobId?: string
+  problems?: string[]
+  marked?: string[] // the AI's ingredients someone marked as wrong
+  note?: string
+  edits?: unknown // what they changed in the AI's draft (lib/importChanges)
+  errorCode?: string // why an import failed, when it never got a job
+  error?: { code: string; where: string; message: string; stack: string }
+  outcome?: 'unchanged' | 'edited' | 'abandoned'
+  changes?: Record<string, number>
+  client?: Record<string, string | boolean>
+  journey?: unknown[]
 }
 
 export interface ListItem {
@@ -71,6 +89,8 @@ export interface Backend {
   /** Put this item (by name) in another aisle, for the whole household from now on. */
   setAisle(name: string, aisle: string): Promise<Household>
   importRecipe(link: string): Promise<ImportedRecipe>
+  /** Problem reports, error reports and import outcomes. Local mode has nowhere to send them. */
+  sendFeedback(body: FeedbackBody): Promise<void>
   /** Permanently delete the account (cloud) or this device's data (local). */
   deleteAccount(): Promise<void>
   listAccessRequests(): Promise<AccessRequest[]>

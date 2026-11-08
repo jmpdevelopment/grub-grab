@@ -22,6 +22,22 @@ function setup(props: Partial<Parameters<typeof SettingsView>[0]> = {}) {
 }
 
 describe('SettingsView', () => {
+  it('report a problem', async () => {
+    const onFeedback = vi.fn().mockResolvedValue('sent')
+    const { user } = setup({ onFeedback })
+    await user.click(screen.getByRole('button', { name: 'Report a problem' }))
+    await user.click(screen.getByRole('button', { name: 'Slow' }))
+    await user.click(screen.getByRole('button', { name: 'Send' }))
+    expect(onFeedback).toHaveBeenCalledWith({ kind: 'general', problems: ['slow'], marked: [], note: '' })
+    await user.click(await screen.findByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('no reporting without somewhere to send it (local mode)', () => {
+    setup()
+    expect(screen.queryByRole('button', { name: 'Report a problem' })).not.toBeInTheDocument()
+  })
+
   it('links to the privacy policy, and offers account deletion only when given a way to do it', () => {
     setup({ onDeleteAccount: vi.fn() })
     expect(screen.getByRole('link', { name: 'Privacy policy' })).toHaveAttribute('href', '/privacy.html')
