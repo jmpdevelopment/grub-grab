@@ -32,6 +32,16 @@ describe('AccessRequests', () => {
     expect(onCount).toHaveBeenCalledWith(3)
   })
 
+  it('reloads when the app refreshes, so new requests appear while Settings is open', async () => {
+    const load = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([ANNA])
+    const props = { load, decide: vi.fn(), declineAll: vi.fn(), onCount: vi.fn() }
+    const { rerender } = render(<AccessRequests {...props} reloadKey={1} />)
+    expect(await screen.findByText(/No one is waiting/)).toBeInTheDocument()
+    rerender(<AccessRequests {...props} reloadKey={2} />)
+    expect(await screen.findByText('Anna')).toBeInTheDocument()
+    expect(props.onCount).toHaveBeenLastCalledWith(1)
+  })
+
   it('says when no one is waiting', async () => {
     setup([])
     expect(await screen.findByText(/No one is waiting/)).toBeInTheDocument()

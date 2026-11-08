@@ -358,6 +358,22 @@ describe('cloud mode', () => {
         expect(tab(/Settings/)).toHaveTextContent(/^⚙️Settings$/)
       })
 
+      it('pulling to refresh on Settings brings in a request that arrived meanwhile', async () => {
+        const { state } = fakeApi({ household: { ...ADMIN, pendingRequests: 0 }, requests: [] })
+        const user = await renderApp()
+        await user.click(await screen.findByRole('button', { name: /Settings/ }))
+        expect(await screen.findByText(/No one is waiting/)).toBeInTheDocument()
+        state.requests = [WAITING[0]]
+        state.household = { ...ADMIN, pendingRequests: 1 }
+        await act(async () => {
+          fireEvent.touchStart(window, { touches: [{ clientY: 0 }] })
+          fireEvent.touchMove(window, { touches: [{ clientY: 400 }] })
+          fireEvent.touchEnd(window, { touches: [] })
+        })
+        expect(await screen.findByRole('button', { name: 'Approve Anna' })).toBeInTheDocument()
+        expect(tab(/Settings/)).toHaveTextContent('Settings (1)')
+      })
+
       it('admins can decline everyone at once', async () => {
         vi.spyOn(window, 'confirm').mockReturnValue(true)
         fakeApi({ household: ADMIN, requests: WAITING })

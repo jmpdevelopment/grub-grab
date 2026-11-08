@@ -7,13 +7,15 @@ interface Props {
   declineAll: () => Promise<number>
   /** Keeps the count on the Settings tab in step. */
   onCount: (pending: number) => void
+  /** Changes on every app refresh (e.g. pull to refresh), so new requests show up while Settings is open. */
+  reloadKey?: number
 }
 
 const when = (seconds: number) =>
   new Date(seconds * 1000).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 
 /** Admins only: people who signed in with Google and are waiting to be let in. */
-export function AccessRequests({ load, decide, declineAll, onCount }: Props) {
+export function AccessRequests({ load, decide, declineAll, onCount, reloadKey = 0 }: Props) {
   const [requests, setRequests] = useState<AccessRequest[] | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -31,7 +33,7 @@ export function AccessRequests({ load, decide, declineAll, onCount }: Props) {
     return () => {
       live = false
     }
-  }, [load, onCount])
+  }, [load, onCount, reloadKey])
 
   const run = async (work: () => Promise<AccessRequest[]>, done: string) => {
     setBusy(true)

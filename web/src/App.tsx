@@ -32,6 +32,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false) // first recipes + list have arrived
+  const [refreshes, setRefreshes] = useState(0) // tells panels that load their own data to reload
 
   // ---- startup -------------------------------------------------------------
   useEffect(() => {
@@ -74,6 +75,7 @@ export default function App() {
     await guard(async () => {
       const h = await backend.me()
       setHousehold(h)
+      setRefreshes((n) => n + 1)
       if (!h.householdId) return // new user: the welcome screen asks them to start or join one first
       const [r, l] = await Promise.all([backend.listRecipes(), backend.getList()])
       setRecipes(r)
@@ -257,7 +259,13 @@ export default function App() {
             }
             adminPanel={
               household?.admin && (
-                <AccessRequests load={loadRequests} decide={b.decideAccess} declineAll={b.declineAllPending} onCount={setPendingCount} />
+                <AccessRequests
+                  load={loadRequests}
+                  decide={b.decideAccess}
+                  declineAll={b.declineAllPending}
+                  onCount={setPendingCount}
+                  reloadKey={refreshes}
+                />
               )
             }
             onRotate={async () => setHousehold(await b.rotateInvite())}
