@@ -1,6 +1,6 @@
 import pytest
 
-from grubgrab import ai, import_worker
+from grubgrab import ai, import_worker, page
 from grubgrab.import_worker import UNEXPECTED, run
 from grubgrab.store import Store
 
@@ -14,12 +14,19 @@ class Extractor:
         self.result = result
         self.known_tags = None
 
-    def extract(self, link, known_tags, language):
+    def extract(self, link, known_tags, language, page_data=None):
         self.known_tags = known_tags
         self.language = language
+        self.page_data = page_data
         if isinstance(self.result, Exception):
             raise self.result
         return {**self.result, "link": link}
+
+
+@pytest.fixture(autouse=True)
+def page_without_recipe_data(monkeypatch):
+    """No real downloads in these tests: by default the page has no recipe data of its own."""
+    monkeypatch.setattr(page, "recipe_data", lambda link: None)
 
 
 @pytest.fixture
@@ -46,6 +53,23 @@ def test_tells_the_ai_which_tags_the_household_already_uses(job):
     run(event(hh, job_id), store, lambda: extractor)
     assert sorted(extractor.known_tags) == ["meat", "soup"]
     assert extractor.language == "en"  # jobs from before languages existed
+
+
+def test_hands_the_ai_the_pages_own_recipe_data(job, monkeypatch):
+    store, hh, job_id = job
+    data = {"name": "Soup", "recipeIngredient": ["1 leek"]}
+    monkeypatch.setattr(page, "recipe_data", lambda link: data if link == "https://e.com" else None)
+    extractor = Extractor(DRAFT)
+    run(event(hh, job_id), store, lambda: extractor)
+    assert extractor.page_data == data
+    assert store.get_import_job(hh, job_id)["status"] == "done"
+
+
+def test_without_recipe_data_the_ai_reads_the_page(job):
+    store, hh, job_id = job
+    extractor = Extractor(DRAFT)
+    run(event(hh, job_id), store, lambda: extractor)
+    assert extractor.page_data is None
 
 
 def test_writes_the_recipe_in_the_jobs_language(job):

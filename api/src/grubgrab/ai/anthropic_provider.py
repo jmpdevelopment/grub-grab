@@ -1,6 +1,5 @@
-"""Claude adapter: Claude reads the page with Anthropic's web fetch tool and answers in RECIPE_SCHEMA.
-
-The page is fetched on Anthropic's side, so this function never downloads arbitrary URLs itself.
+"""Claude adapter: Claude tidies the page's recipe data (when the app could read it, see grubgrab.page) or
+otherwise reads the page with Anthropic's web fetch tool, and answers in RECIPE_SCHEMA.
 Two ways to reach Claude, same requests:
   - from_aws():           Claude Platform on AWS. Signed with the function's AWS role: no key to store,
                           and usage is billed on the AWS bill (so the AWS budget alert covers it).
@@ -39,13 +38,14 @@ PRICES = {
 }
 
 
-def _usage_log(model: str, responses: list, seconds: float) -> dict:
+def _usage_log(model: str, responses: list, seconds: float, source: str) -> dict:
     """One import's usage, summed over every request it made (a paused turn means more than one)."""
     def total(field: str) -> int:
         return sum(getattr(r.usage, field, None) or 0 for r in responses)
 
     entry = {
         "event": "recipe_import",
+        "source": source,  # "page_data": the page's recipe data; "web_fetch": Claude read the whole page
         "model": model,
         "requests": len(responses),
         "input_tokens": total("input_tokens"),
@@ -97,8 +97,10 @@ class AnthropicExtractor:
             raise ExtractionError("import_setup", "Recipe import isn't working right now (server setup). Add the recipe by hand.") from exc
         return cls._configured(anthropic.Anthropic(api_key=key, timeout=_TIMEOUT_SECONDS, max_retries=0))
 
-    def extract(self, link: str, known_tags: list[str], language: str = "en") -> dict:
-        messages: list = [{"role": "user", "content": request_text(link, known_tags, language)}]
+    def extract(self, link: str, known_tags: list[str], language: str = "en", page_data: dict | None = None) -> dict:
+        messages: list = [{"role": "user", "content": request_text(link, known_tags, language, page_data)}]
+        # With the recipe data in hand there's nothing to fetch: a small request, no tool.
+        tools = [] if page_data else [{"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 2, "max_content_tokens": 30000}]
         responses: list = []
         started = time.monotonic()
         try:
@@ -108,7 +110,7 @@ class AnthropicExtractor:
                     max_tokens=16000,
                     system=RECIPE_INSTRUCTIONS,
                     messages=messages,
-                    tools=[{"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 2, "max_content_tokens": 30000}],
+                    **({"tools": tools} if tools else {}),
                     output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": RECIPE_SCHEMA}},
                     # If a safety check declines the request, the API retries it on a suitable model itself.
                     betas=["server-side-fallback-2026-07-01"],
@@ -129,7 +131,8 @@ class AnthropicExtractor:
             log.error("Anthropic request failed: %s", exc)
             raise ExtractionError("import_unavailable", "Couldn't read that page right now. Try again, or add the recipe by hand.") from exc
 
-        log.info(json.dumps(_usage_log(self.model, responses, time.monotonic() - started)))
+        source = "page_data" if page_data else "web_fetch"
+        log.info(json.dumps(_usage_log(self.model, responses, time.monotonic() - started, source)))
         if response.stop_reason == "refusal":
             raise ExtractionError("unreadable", "Couldn't read a recipe from that page.")
         if response.stop_reason != "end_turn":  # still paused, or ran out of room

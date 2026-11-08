@@ -1,9 +1,10 @@
 """AI recipe import. Pick a provider by name; each one turns a link into a recipe draft.
 
 To add a provider (say Gemini or OpenAI): write a module with a class that has
-    extract(self, link: str, known_tags: list[str], language: str) -> dict   # returns recipe.to_draft(...)
+    extract(self, link, known_tags, language, page_data=None) -> dict   # returns recipe.to_draft(...)
 using recipe.RECIPE_INSTRUCTIONS, recipe.request_text(...) and RECIPE_SCHEMA, add it to _PROVIDERS below, and set aiProvider (and
-aiModel) in infra/settings.local.json. Nothing else in the app changes.
+aiModel) in infra/settings.local.json. Nothing else in the app changes. When page_data (the page's own recipe data,
+see grubgrab.page) is given, everything needed is in the request: send it without a page-reading tool.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from .recipe import ExtractionError
 
 
 class RecipeExtractor(Protocol):
-    def extract(self, link: str, known_tags: list[str], language: str = "en") -> dict: ...
+    def extract(self, link: str, known_tags: list[str], language: str = "en", page_data: dict | None = None) -> dict: ...
 
 
 def _anthropic() -> RecipeExtractor:

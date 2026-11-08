@@ -46,20 +46,20 @@
     <li><strong>To approve new accounts:</strong> when someone signs in for the first time, their name and email are shown to the app's administrator, who decides whether to let them in. The administrator receives an email notification of new requests.</li>
     <li><strong>To show your account</strong> in Settings (your email).</li>
     <li><strong>To run the app:</strong> storing your recipes and list and sharing them with the members of your household.</li>
-    <li><strong>To fill in a recipe from a link</strong>, when you choose to: the recipe page is read by an AI model (see "Who we share it with") and the result is shown to you to check before anything is saved.</li>
+    <li><strong>To fill in a recipe from a link</strong>, when you choose to: Grub Grab reads the recipe page (its title, servings and ingredient list), an AI model tidies it into the recipe (see "Who we share it with"), and the result is shown to you to check before anything is saved.</li>
     <li><strong>To keep it secure</strong> and to investigate faults or abuse.</li>
   </ul>
   <p>We do not use your information for advertising, we do not sell it, and we do not use it to build profiles of you.</p>
 
   <h2>Use of Google user data</h2>
-  <p>Grub Grab's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. Information from your Google account is used only to sign you in, identify you within the app and approve your access, as described above. It is never sent to an AI model or AI provider (including for <strong>Fill from link</strong>, which sends only the recipe page's link), it is not transferred to anyone except as described in "Who we share it with", it is not used for advertising, and no person reads it except the administrator, who sees new sign-up requests, or where needed for security or to comply with the law.</p>
+  <p>Grub Grab's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. Information from your Google account is used only to sign you in, identify you within the app and approve your access, as described above. It is never sent to an AI model or AI provider (including for <strong>Fill from link</strong>, which sends only the recipe page's link and the recipe read from it), it is not transferred to anyone except as described in "Who we share it with", it is not used for advertising, and no person reads it except the administrator, who sees new sign-up requests, or where needed for security or to comply with the law.</p>
 
   <h2>Who we share it with</h2>
   <ul>
     <li><strong>Members of your household</strong> see the household's recipes, shopping list and invite code. They do not see your email address.</li>
     <li><strong>Amazon Web Services (AWS)</strong> hosts the app and stores its data in its London (eu-west-2) region, acting as a service provider. Sign-in is handled by Amazon Cognito together with Google.</li>
     <li><strong>Google</strong> handles the sign-in itself, under <a href="https://policies.google.com/privacy">Google's privacy policy</a>.</li>
-    <li><strong>Anthropic</strong>, which provides the Claude AI model, receives the link when you use <strong>Fill from link</strong>, fetches that public page and returns the recipe's ingredients. Nothing about you or your Google account is sent with it. Anthropic processes these requests as a service provider under its <a href="https://www.anthropic.com/legal/commercial-terms">commercial terms</a> and <a href="https://www.anthropic.com/legal/privacy">privacy policy</a>.</li>
+    <li><strong>Anthropic</strong>, which provides the Claude AI model, receives the link when you use <strong>Fill from link</strong>, together with the recipe Grub Grab read from that public page (or, if Grub Grab couldn't read it, fetches the page itself), and returns the recipe's ingredients. Nothing about you or your Google account is sent with it. Anthropic processes these requests as a service provider under its <a href="https://www.anthropic.com/legal/commercial-terms">commercial terms</a> and <a href="https://www.anthropic.com/legal/privacy">privacy policy</a>.</li>
   </ul>
   <p>We do not sell, rent or trade your information, and we do not share it with anyone else unless required by law.</p>
 
