@@ -9,3 +9,5 @@ __pycache__/
 .env
 .DS_Store
 web/public/config.json
+.coverage
+coverage/
