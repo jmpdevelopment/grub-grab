@@ -35,6 +35,9 @@ export class CloudBackend implements Backend {
   createHousehold = () => this.req<Household>('POST', '/household')
   joinHousehold = (code: string) => this.req<Household>('POST', '/household/join', { code })
   rotateInvite = () => this.req<Household>('POST', '/household/invite')
+  deleteAccount = async () => {
+    await this.req('DELETE', '/me')
+  }
   listAccessRequests = () => this.req<AccessRequest[]>('GET', '/admin/requests')
   decideAccess = async (username: string, approve: boolean) => {
     await this.req('POST', `/admin/requests/${encodeURIComponent(username)}/${approve ? 'approve' : 'decline'}`)
@@ -97,6 +100,9 @@ export class LocalBackend implements Backend {
   }
   async rotateInvite(): Promise<Household> {
     throw new Error('Sharing needs the cloud version — see the README to deploy.')
+  }
+  async deleteAccount(): Promise<void> {
+    localStorage.removeItem(KEY)
   }
   // Nobody signs up in local mode, so there is never anyone to approve.
   async listAccessRequests(): Promise<AccessRequest[]> {

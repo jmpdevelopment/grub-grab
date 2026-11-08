@@ -33,6 +33,12 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
   const routes: Record<string, Handler> = {
     'GET /config.json': () => json(CFG),
     [`GET ${API}/me`]: () => json(state.household),
+    [`DELETE ${API}/me`]: () => {
+      state.recipes = []
+      state.items = []
+      state.household = { householdId: null, inviteCode: null }
+      return json({ deleted: true, householdDeleted: true })
+    },
     [`POST ${API}/household`]: () => {
       state.household = state.household.householdId ? state.household : { householdId: 'h-new', inviteCode: 'NEWHOME234' }
       return json(state.household)

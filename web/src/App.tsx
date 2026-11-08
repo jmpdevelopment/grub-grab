@@ -7,7 +7,7 @@ import { RecipeEditor } from './components/RecipeEditor'
 import { RecipesView } from './components/RecipesView'
 import { SettingsView } from './components/SettingsView'
 import { updateApp, watchForAppUpdates } from './lib/appUpdate'
-import { completeSignIn, currentEmail, getAccessToken, SignInNotice, signIn, signOut } from './lib/auth'
+import { completeSignIn, currentEmail, forgetSession, getAccessToken, SignInNotice, signIn, signOut } from './lib/auth'
 import { AuthRequiredError, CloudBackend, LocalBackend } from './lib/backend'
 import { loadConfig, type AppConfig } from './lib/config'
 import type { Backend, Household, ListItem, Recipe } from './types'
@@ -125,6 +125,11 @@ export default function App() {
         <button className="btn google" onClick={() => signIn(boot.cfg)}>
           Continue with Google
         </button>
+        <p className="legal">
+          <a href="/privacy.html" target="_blank" rel="noopener">
+            Privacy policy
+          </a>
+        </p>
       </div>
     )
 
@@ -237,6 +242,19 @@ export default function App() {
             household={household}
             email={currentEmail()}
             onSignOut={() => void signOut(cfg!)} // the button only exists in cloud mode, where cfg is set
+            onDeleteAccount={
+              b.mode === 'cloud'
+                ? async () => {
+                    await b.deleteAccount()
+                    forgetSession()
+                    setRecipes([])
+                    setItems([])
+                    setHousehold(null)
+                    setNotice('Your account and its data have been deleted.')
+                    setBoot({ state: 'signin', cfg: cfg! })
+                  }
+                : undefined
+            }
             adminPanel={
               household?.admin && (
                 <AccessRequests load={loadRequests} decide={b.decideAccess} declineAll={b.declineAllPending} onCount={setPendingCount} />

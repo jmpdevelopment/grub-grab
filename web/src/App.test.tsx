@@ -124,6 +124,12 @@ describe('local mode (no config.json)', () => {
     expect(screen.getByText('No recipes yet.')).toBeInTheDocument()
   })
 
+  it('has no account to delete in local mode', async () => {
+    const user = await renderApp()
+    await user.click(await screen.findByRole('button', { name: /Settings/ }))
+    expect(screen.queryByRole('button', { name: 'Delete my account' })).not.toBeInTheDocument()
+  })
+
   it('shows local mode in settings', async () => {
     const user = await renderApp()
     await user.click(await screen.findByRole('button', { name: /Settings/ }))
@@ -210,6 +216,12 @@ describe('cloud mode', () => {
       await renderApp()
       expect(await screen.findByText(/Your request to join has been sent/)).toHaveClass('notice')
       expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
+    })
+
+    it('links to the privacy policy from the sign-in screen', async () => {
+      fakeApi()
+      await renderApp()
+      expect(await screen.findByRole('link', { name: 'Privacy policy' })).toHaveAttribute('href', '/privacy.html')
     })
 
     it('shows why sign-in failed', async () => {
@@ -380,6 +392,19 @@ describe('cloud mode', () => {
       await user.click(tab(/Recipes/))
       expect(screen.getByText('Pasta')).toBeInTheDocument()
       expect(screen.queryByText('Loading recipes…')).not.toBeInTheDocument()
+    })
+
+    it('deletes the account and returns to the sign-in screen, signed out', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const { calls } = fakeApi({ recipes: [PASTA] })
+      const user = await renderApp()
+      await screen.findByText('Pasta')
+      await user.click(tab(/Settings/))
+      await user.click(screen.getByRole('button', { name: 'Delete my account' }))
+      expect(await screen.findByText('Your account and its data have been deleted.')).toHaveClass('notice')
+      expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
+      expect(calls.some((c) => c.method === 'DELETE' && c.url.pathname === '/me')).toBe(true)
+      expect(localStorage.getItem('gg.tokens')).toBeNull()
     })
 
     it('shows the app with an error banner if the account cannot be loaded', async () => {

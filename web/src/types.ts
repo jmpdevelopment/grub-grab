@@ -50,6 +50,8 @@ export interface Backend {
   createHousehold(): Promise<Household>
   joinHousehold(code: string): Promise<Household>
   rotateInvite(): Promise<Household>
+  /** Permanently delete the account (cloud) or this device's data (local). */
+  deleteAccount(): Promise<void>
   listAccessRequests(): Promise<AccessRequest[]>
   decideAccess(username: string, approve: boolean): Promise<void>
   declineAllPending(): Promise<number>

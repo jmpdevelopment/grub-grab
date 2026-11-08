@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CFG, fakeFetch, fakeLocation, json, jwt, saveTokens } from '../test/fakes'
-import { completeSignIn, currentEmail, getAccessToken, SignInNotice, signIn, signOut } from './auth'
+import { completeSignIn, currentEmail, forgetSession, getAccessToken, SignInNotice, signIn, signOut } from './auth'
 
 const TOKEN_URL = 'POST https://auth.example.com/oauth2/token'
 const tokenResponse = (over = {}) =>
@@ -58,6 +58,16 @@ describe('signOut', () => {
     await signOut(CFG)
     expect(fn).not.toHaveBeenCalled()
     expect(assign).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('forgetSession', () => {
+  it('drops the stored session without going anywhere', async () => {
+    const { assign } = fakeLocation()
+    saveTokens()
+    forgetSession()
+    expect(await getAccessToken(CFG)).toBeNull()
+    expect(assign).not.toHaveBeenCalled()
   })
 })
 

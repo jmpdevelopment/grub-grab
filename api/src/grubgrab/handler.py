@@ -5,8 +5,11 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
+
+import boto3
 
 from .aggregate import aggregate, combine
 from .store import INVITE_LENGTH, Store, normalise_invite_code
@@ -201,6 +204,25 @@ def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
     return store.list_items(hh)
 
 
+def _delete_sign_in(username: str) -> None:
+    """Remove the Cognito user, so the account is gone and its sessions stop working."""
+    client = boto3.client("cognito-idp")
+    try:
+        client.admin_delete_user(UserPoolId=os.environ["USER_POOL_ID"], Username=username)
+    except client.exceptions.UserNotFoundException:
+        pass  # already gone (e.g. a retry after a partial failure)
+
+
+def _delete_account(sub: str, claims: dict, store: Store) -> dict:
+    username = claims.get("username")
+    if not username:
+        raise ApiError(400, "Can't tell which account to delete")
+    # Data first: if removing the sign-in then fails, a retry finishes the job (nothing is left orphaned).
+    household_deleted = store.delete_user_data(sub, username)
+    _delete_sign_in(username)
+    return _resp(200, {"deleted": True, "householdDeleted": household_deleted})
+
+
 def _is_admin(claims: dict) -> bool:
     # API Gateway passes list claims as text, e.g. "[admins]" or "[admins other]".
     groups = claims.get("cognito:groups") or []
@@ -245,6 +267,8 @@ def route(event: dict, store: Store) -> dict:
         if _is_admin(claims):
             me = {**me, "admin": True, "pendingRequests": len(store.access_requests())}
         return _resp(200, me)
+    if route_key == "DELETE /me":
+        return _delete_account(sub, claims, store)
     if route_key == "POST /household":
         return _resp(200, store.create_household(sub))
     if route_key == "POST /household/join":

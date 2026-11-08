@@ -101,6 +101,8 @@ aws cognito-idp admin-add-user-to-group --region eu-west-2 \
   --user-pool-id <UserPoolId> --username <your username, e.g. google_1234…> --group-name admins
 ```
 
+The privacy policy is served at `/privacy.html` (linked from the sign-in screen and Settings). Its template is `web/legal/privacy.html`; the contact address is filled in at deploy time from `contactEmail` in `infra/settings.local.json` (falling back to `notifyEmail`), so it never sits in the repo. Use that URL as the privacy policy link in Google's branding settings.
+
 Set `notifyEmail` in `infra/settings.local.json` to be emailed when someone asks to join (at most one email an hour, however many ask) and when AWS spend passes 80% of `monthlyBudgetUsd` (default $5) or is forecast to exceed it. AWS emails you once to confirm the subscription; click the link. The budget covers your whole AWS account.
 
 **Region:** the app deploys to `eu-west-2` (London) whatever your AWS CLI's default region is. To use another region, set `"region"` in `infra/settings.local.json` (or pass `-c region=...`), and create the Google client secret and the OAuth URLs in that region too.
@@ -111,6 +113,7 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 
 | Method | Path | |
 |---|---|---|
+| DELETE | `/me` | delete your account: your sign-in, profile and sign-up request, plus your household's recipes, list and invite code if nobody else is in it |
 | GET | `/me` | household id + invite code, or both `null` for a new user who hasn't started or joined one |
 | POST | `/household` | start a household (returns the existing one if the user already has one) |
 | GET | `/admin/requests` | admins only: pending sign-up requests |
@@ -135,6 +138,7 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 - CloudFront sends a strict Content-Security-Policy (no inline scripts, `frame-ancestors 'none'`), HSTS, `X-Frame-Options: DENY`, `nosniff` and a referrer policy.
 - Sign-in is Google only: no passwords are stored, and self-service email sign-up is switched off. The Google client secret is read from Secrets Manager at deploy time.
 - New accounts need an admin's approval (see *Sign-up approval*); until then a sign-in is refused before any account or token exists. Signing out revokes the session on the server, so a copied refresh token stops working.
+- Anyone can delete their account in Settings. For that one action the API may call Cognito's `AdminDeleteUser` on its own user pool, and the username always comes from the caller's verified token. Nothing in the app can add anyone to the `admins` group.
 - Spend caps (database throughput, function concurrency, per-household limits) bound what even an approved account can cost, and the monthly budget alert flags anything unusual. A list request that would exceed the limit is refused before anything is written.
 - API access logs (no request bodies or tokens) and Lambda logs are kept for 90 days.
 - `infra/tests` asserts all of the above against the synthesised template.

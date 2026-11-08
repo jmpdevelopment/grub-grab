@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from 'react'
 import { formatInviteCode } from '../lib/invite'
 import type { Household } from '../types'
+import { DeleteAccount } from './DeleteAccount'
 import { JoinForm } from './JoinForm'
 
 interface Props {
@@ -12,9 +13,10 @@ interface Props {
   onSignOut: () => void
   /** Shown to admins only: the sign-up requests panel. */
   adminPanel?: ReactNode
+  onDeleteAccount?: () => Promise<void>
 }
 
-export function SettingsView({ mode, household, email, onJoin, onRotate, onSignOut, adminPanel }: Props) {
+export function SettingsView({ mode, household, email, onJoin, onRotate, onSignOut, adminPanel, onDeleteAccount }: Props) {
   const [shareMsg, setShareMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -72,8 +74,15 @@ export function SettingsView({ mode, household, email, onJoin, onRotate, onSignO
               <p className="muted">Got a code? Joining switches you to their recipes and list.</p>
               <JoinForm onJoin={onJoin} joinedMessage="Joined! You now share recipes and the list." />
             </section>
+
+            {onDeleteAccount && <DeleteAccount admin={Boolean(household?.admin)} onDelete={onDeleteAccount} />}
           </>
         )}
+        <p className="legal">
+          <a href="/privacy.html" target="_blank" rel="noopener">
+            Privacy policy
+          </a>
+        </p>
       </div>
     </>
   )

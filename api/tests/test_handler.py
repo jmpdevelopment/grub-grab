@@ -2,6 +2,7 @@ import base64
 import json
 from decimal import Decimal
 
+import boto3
 import pytest
 
 from grubgrab import handler
@@ -596,3 +597,66 @@ class TestAdmin:
     def test_admin_without_a_household_can_still_review(self, requests):
         status, me = admin_call(requests, "GET /me", sub="newadmin")
         assert status == 200 and me["householdId"] is None and me["pendingRequests"] == 2
+
+
+# ---- deleting your account ---------------------------------------------------------------
+
+
+class TestDeleteAccount:
+    @pytest.fixture
+    def pool(self, monkeypatch):
+        """A real Cognito user pool API, served in-process by moto (already active via the table fixture)."""
+        cognito = boto3.client("cognito-idp")
+        pool_id = cognito.create_user_pool(PoolName="test")["UserPool"]["Id"]
+        for username in ("Google_alice", "Google_carol"):
+            cognito.admin_create_user(UserPoolId=pool_id, Username=username)
+        monkeypatch.setenv("USER_POOL_ID", pool_id)
+        return cognito, pool_id
+
+    @staticmethod
+    def delete_me(store, sub, username):
+        evt = event("DELETE /me", sub=sub)
+        if username:
+            evt["requestContext"]["authorizer"]["jwt"]["claims"]["username"] = username
+        resp = handle(evt, store)
+        return resp["statusCode"], json.loads(resp["body"])
+
+    @staticmethod
+    def users(pool):
+        cognito, pool_id = pool
+        return sorted(u["Username"] for u in cognito.list_users(UserPoolId=pool_id)["Users"])
+
+    def test_last_person_out_takes_the_household_with_them(self, store, pool):
+        _, alices = call(store, "GET /me", sub="alice")
+        create(store, PASTA, sub="alice")
+        call(store, "POST /list/items", sub="alice", body={"name": "Milk"})
+        call(store, "POST /household/join", sub="alice", body={"code": "WRONGWRONG"})  # leaves a counter behind
+        store.request_access("Google_alice", "alice@x.com", "Alice")
+        create(store, CURRY, sub="bob")
+
+        assert self.delete_me(store, "alice", "Google_alice") == (200, {"deleted": True, "householdDeleted": True})
+
+        left = store.table.scan()["Items"]
+        assert not [i for i in left if alices["householdId"] in json.dumps(i, default=str)]  # recipes, list, META, invite
+        assert not [i for i in left if i["PK"] == "USER#alice"]  # profile and join counters
+        assert store.access_requests() == [] and not [i for i in left if i["SK"] == "REQ#Google_alice"]
+        assert self.users(pool) == ["Google_carol"]  # the sign-in itself is gone
+        assert call(store, "GET /me", sub="alice")[1] == {"householdId": None, "inviteCode": None}
+        assert error(store, "POST /household/join", sub="bob", body={"code": alices["inviteCode"]})[0] == 404
+        assert [r["title"] for r in call(store, "GET /recipes", sub="bob")[1]] == ["Curry"]  # others untouched
+
+    def test_shared_recipes_stay_with_the_rest_of_the_household(self, store, pool):
+        _, alices = call(store, "GET /me", sub="alice")
+        create(store, PASTA, sub="alice")
+        call(store, "POST /household/join", sub="carol", body={"code": alices["inviteCode"]})
+        assert self.delete_me(store, "carol", "Google_carol") == (200, {"deleted": True, "householdDeleted": False})
+        assert [r["title"] for r in call(store, "GET /recipes", sub="alice")[1]] == ["Pasta"]
+        assert call(store, "GET /me", sub="alice")[1] == alices  # invite code still works for them
+        assert self.users(pool) == ["Google_alice"]
+
+    def test_someone_without_a_household_or_a_sign_in_left(self, store, pool):
+        assert self.delete_me(store, "nobody", "Google_nobody") == (200, {"deleted": True, "householdDeleted": False})
+
+    def test_needs_the_username_from_the_token(self, store, pool):
+        assert self.delete_me(store, "alice", None) == (400, {"error": "Can't tell which account to delete"})
+        assert call(store, "GET /me", sub="alice")[1]["householdId"]  # nothing deleted

@@ -4,5 +4,6 @@
   "hostedZoneId": "",
   "region": "eu-west-2",
   "notifyEmail": "you@example.com",
-  "monthlyBudgetUsd": 5
+  "monthlyBudgetUsd": 5,
+  "contactEmail": "you@example.com"
 }

@@ -22,7 +22,7 @@ from decimal import Decimal
 from typing import Callable
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
 INVITE_LENGTH = 10  # 32^10 ≈ 1.1e15 codes (50 bits)
@@ -151,8 +151,9 @@ class Store:
 
     # ---- generic helpers ---------------------------------------------------
 
-    def _query(self, pk: str, prefix: str, **extra) -> list[dict]:
-        items, kwargs = [], {"KeyConditionExpression": Key("PK").eq(pk) & Key("SK").begins_with(prefix), **extra}
+    def _query(self, pk: str, prefix: str | None = None, **extra) -> list[dict]:
+        condition = Key("PK").eq(pk) & Key("SK").begins_with(prefix) if prefix else Key("PK").eq(pk)
+        items, kwargs = [], {"KeyConditionExpression": condition, **extra}
         while True:
             resp = self.table.query(**kwargs)
             items.extend(resp.get("Items", []))
@@ -162,6 +163,37 @@ class Store:
 
     def _query_prefix(self, household_id: str, prefix: str) -> list[dict]:
         return self._query(f"HH#{household_id}", prefix)
+
+    # ---- deleting an account ------------------------------------------------
+
+    def _others_in_household(self, household_id: str, user_sub: str) -> bool:
+        """Does anyone besides this user belong to the household? Checks every profile, so it never
+        guesses wrong (a full scan, but the table is small and deleting an account is rare)."""
+        kwargs = {"FilterExpression": Attr("SK").eq("PROFILE") & Attr("householdId").eq(household_id)}
+        while True:
+            page = self.table.scan(**kwargs)
+            if any(i["PK"] != f"USER#{user_sub}" for i in page["Items"]):
+                return True
+            if "LastEvaluatedKey" not in page:
+                return False
+            kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    def delete_user_data(self, user_sub: str, username: str) -> bool:
+        """Remove everything stored about a user. Their household (recipes, list, invite code) goes too
+        if nobody else is in it; otherwise it stays for the others. Returns True if it was deleted."""
+        household = self.find_household(user_sub)
+        household_deleted = False
+        with self.table.batch_writer() as batch:
+            if household and not self._others_in_household(household["householdId"], user_sub):
+                for item in self._query(f"HH#{household['householdId']}"):
+                    batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+                if household["inviteCode"]:
+                    batch.delete_item(Key={"PK": f"INVITE#{household['inviteCode']}", "SK": "INVITE"})
+                household_deleted = True
+            for item in self._query(f"USER#{user_sub}"):  # profile and join-attempt counters
+                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+            batch.delete_item(Key={"PK": _ACCESS, "SK": f"REQ#{username}"})  # signing in again means asking again
+        return household_deleted
 
     def count_recipes(self, household_id: str) -> int:
         return len(self._query_prefix(household_id, "RECIPE#"))

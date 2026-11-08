@@ -216,3 +216,6 @@ body { overscroll-behavior-y: contain; } /* our pull replaces the browser's own 
 .skeleton-card::after { top: 46px; width: 28%; }
 @keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .skeleton-card { animation: none; } }
+
+.legal { text-align: center; font-size: 0.85rem; margin-top: 24px; }
+.legal a { color: var(--muted); }

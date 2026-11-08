@@ -23,8 +23,9 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // config.json must always come from the network so redeploys pick up new settings.
-        navigateFallbackDenylist: [/^\/config\.json$/],
+        // config.json must always come from the network so redeploys pick up new settings, and real pages
+        // like the privacy policy must not be swapped for the app.
+        navigateFallbackDenylist: [/^\/config\.json$/, /^\/privacy\.html$/],
         globIgnores: ['config.json'],
       },
     }),

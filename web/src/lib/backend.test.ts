@@ -35,6 +35,7 @@ describe('CloudBackend', () => {
       [`POST ${API}/admin/requests/Google_1%20x/approve`]: ok({ status: 'approved' }),
       [`POST ${API}/admin/requests/Google_2/decline`]: ok({ status: 'declined' }),
       [`POST ${API}/admin/requests/decline-pending`]: ok({ declined: 3 }),
+      [`DELETE ${API}/me`]: ok({ deleted: true, householdDeleted: false }),
       [`POST ${API}/household`]: ok({ householdId: 'h', inviteCode: 'ABC234' }),
       [`POST ${API}/household/join`]: ok({ householdId: 'h2', inviteCode: 'XYZ234' }),
       [`POST ${API}/household/invite`]: ok({ householdId: 'h', inviteCode: 'NEWCODE234' }),
@@ -53,6 +54,7 @@ describe('CloudBackend', () => {
 
     expect(b.mode).toBe('cloud')
     expect(await b.me()).toEqual({ householdId: 'h', inviteCode: 'ABC234' })
+    expect(await b.deleteAccount()).toBeUndefined()
     expect(await b.listAccessRequests()).toEqual([])
     expect(await b.decideAccess('Google_1 x', true)).toBeUndefined()
     expect(await b.decideAccess('Google_2', false)).toBeUndefined()
@@ -74,6 +76,7 @@ describe('CloudBackend', () => {
 
     expect(calls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toEqual([
       'GET /me',
+      'DELETE /me',
       'GET /admin/requests',
       'POST /admin/requests/Google_1%20x/approve',
       'POST /admin/requests/Google_2/decline',
@@ -150,6 +153,9 @@ describe('LocalBackend', () => {
     expect(b.mode).toBe('local')
     expect(await b.me()).toEqual({ householdId: 'local', inviteCode: null })
     expect(await b.createHousehold()).toEqual({ householdId: 'local', inviteCode: null })
+    await b.createRecipe({ title: 'Soup', servings: null, notes: '', ingredients: [] })
+    await b.deleteAccount() // local mode: wipes this device's data
+    expect(await b.listRecipes()).toEqual([])
     expect(await b.listAccessRequests()).toEqual([])
     expect(await b.decideAccess()).toBeUndefined()
     expect(await b.declineAllPending()).toBe(0)

@@ -1,3 +1,4 @@
+import html
 import json
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_route53 as route53
@@ -42,6 +44,12 @@ ADMIN_GROUP = "admins"  # must match api/src/grubgrab/handler.py
 # Google sign-in. The client ID goes in settings.local.json (git-ignored) or `-c googleClientId=...`.
 # The client secret lives in Secrets Manager, never in the repo.
 GOOGLE_SECRET_NAME = "grubgrab/google-client-secret"
+
+
+def privacy_page(contact_email: str) -> str:
+    """The privacy policy, with the contact address filled in at deploy time so it stays out of the repo."""
+    template = (ROOT / "web" / "legal" / "privacy.html").read_text()
+    return template.replace("{{CONTACT_EMAIL}}", html.escape(contact_email or "the app's administrator", quote=True))
 
 
 class SiteDomain:
@@ -154,6 +162,7 @@ class GrubGrabStack(Stack):
         # ---- sign-up approval ---------------------------------------------------------
         # New people's first Google sign-in is held until an admin approves it (see api/src/grubgrab/signup.py).
         notify_email = (self.node.try_get_context("notifyEmail") or "").strip()
+        contact_email = (self.node.try_get_context("contactEmail") or "").strip() or notify_email  # privacy page
         code = lambda_.Code.from_asset(str(ROOT / "api" / "src"))
         signup_fn = lambda_.Function(
             self,
@@ -221,6 +230,12 @@ class GrubGrabStack(Stack):
             log_group=logs.LogGroup(self, "ApiFnLogs", retention=LOG_RETENTION, removal_policy=RemovalPolicy.DESTROY),
         )
         table.grant_read_write_data(fn)
+        # "Delete my account" removes the caller's own sign-in. Only this one action, only on this pool;
+        # the username always comes from the verified token, never from the request.
+        fn.add_environment("USER_POOL_ID", user_pool.user_pool_id)
+        fn.add_to_role_policy(
+            iam.PolicyStatement(actions=["cognito-idp:AdminDeleteUser"], resources=[user_pool.user_pool_arn])
+        )
 
         api = apigw.HttpApi(self, "Api", create_default_stage=False)
         access_logs = logs.LogGroup(self, "ApiAccessLogs", retention=LOG_RETENTION, removal_policy=RemovalPolicy.DESTROY)
@@ -354,7 +369,7 @@ class GrubGrabStack(Stack):
         )
         integration = integrations.HttpLambdaIntegration("ApiIntegration", fn)
         routes = {
-            "/me": [apigw.HttpMethod.GET],
+            "/me": [apigw.HttpMethod.GET, apigw.HttpMethod.DELETE],
             "/household": [apigw.HttpMethod.POST],
             "/household/join": [apigw.HttpMethod.POST],
             "/household/invite": [apigw.HttpMethod.POST],
@@ -378,6 +393,7 @@ class GrubGrabStack(Stack):
             "DeploySite",
             sources=[
                 s3deploy.Source.asset(str(ROOT / "web" / "dist")),
+                s3deploy.Source.data("privacy.html", privacy_page(contact_email)),
                 s3deploy.Source.json_data(
                     "config.json",
                     {

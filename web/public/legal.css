@@ -1,0 +1,14 @@
+/* Styles for static pages such as /privacy.html (the CSP allows only same-origin stylesheets). */
+:root { --green: #2f6f4f; --bg: #faf8f4; --text: #1f2a24; --muted: #6b756f; --line: #e4e0d8; color-scheme: light dark; }
+@media (prefers-color-scheme: dark) { :root { --green: #5fae86; --bg: #141816; --text: #eef1ef; --muted: #9aa49e; --line: #2e3532; } }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; overflow-wrap: anywhere; }
+h1 { font-size: 1.8rem; margin: 8px 0 4px; }
+h2 { font-size: 1.2rem; margin: 32px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+h3 { font-size: 1rem; margin: 16px 0 4px; }
+a { color: var(--green); }
+.brand a { font-weight: 700; text-decoration: none; }
+.muted { color: var(--muted); }
+.back { margin-top: 32px; }
+code { font-size: 0.9em; }
+ul { padding-left: 1.3em; }

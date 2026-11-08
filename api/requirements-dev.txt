@@ -1,4 +1,4 @@
 boto3
-moto[dynamodb]>=5
+moto[dynamodb,cognitoidp,sns,sqs]>=5
 pytest
 pytest-cov

@@ -208,6 +208,35 @@ class TestAccessRequests:
         assert Store(LateRequestTable()).request_access("Google_1", "a@x.com", "A") == ("pending", False)
 
 
+class TestDeleteUserData:
+    def test_checks_every_page_of_profiles_before_deleting_a_household(self, table):
+        class PagingScanTable:
+            """Forces one-item scan pages, so the household check has to follow every page."""
+
+            def scan(self, **kwargs):
+                return table.scan(Limit=1, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(table, name)
+
+        s = Store(PagingScanTable())
+        hh = s.create_household("alice")
+        s.put_recipe(hh["householdId"], {"title": "Soup", "ingredients": []})
+        s.create_household("bob")
+        s.join_household("zed", hh["inviteCode"])  # sorts last, so it's found on a later page
+        assert s.delete_user_data("alice", "Google_alice") is False
+        assert s.count_recipes(hh["householdId"]) == 1
+        assert s.delete_user_data("zed", "Google_zed") is True
+        assert s.count_recipes(hh["householdId"]) == 0
+
+
+    def test_household_without_an_invite_code(self, store):
+        store.table.put_item(Item={"PK": "USER#alice", "SK": "PROFILE", "householdId": "bare"})
+        store.put_recipe("bare", {"title": "Soup", "ingredients": []})
+        assert store.delete_user_data("alice", "Google_alice") is True
+        assert store.count_recipes("bare") == 0 and store.find_household("alice") is None
+
+
 class TestListWrites:
     def test_counts_and_batched_replace(self, store):
         assert (store.count_recipes("h"), store.count_items("h")) == (0, 0)

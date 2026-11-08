@@ -427,3 +427,45 @@ def test_email_alerts_for_sign_ups_and_the_monthly_bill(budget, expected):
     assert alerts == {("ACTUAL", 80), ("FORECASTED", 100)}
     assert all(n["Subscribers"] == [{"Address": "me@example.com", "SubscriptionType": "EMAIL"}] for n in budget_props["NotificationsWithSubscribers"])
     test_no_dependency_cycles(t)
+
+
+# ---- account deletion and the privacy page ---------------------------------------------------
+
+
+def policy_actions(template: Template, role_prefix: str) -> list[dict]:
+    for name, r in template.find_resources("AWS::IAM::Policy").items():
+        if name.startswith(role_prefix):
+            return r["Properties"]["PolicyDocument"]["Statement"]
+    raise AssertionError(role_prefix)
+
+
+def test_api_may_only_delete_users_from_its_own_pool(template):
+    cognito = [s for s in policy_actions(template, "ApiFnServiceRole") if "cognito" in json.dumps(s["Action"])]
+    assert len(cognito) == 1
+    assert cognito[0]["Action"] == "cognito-idp:AdminDeleteUser"
+    assert refs(cognito[0]["Resource"]) == {logical_id(template, "AWS::Cognito::UserPool")}
+    signup_actions = json.dumps([s["Action"] for s in policy_actions(template, "SignupFnServiceRole")])
+    assert "cognito" not in signup_actions
+    env = functions(template)["grubgrab.handler.lambda_handler"]["Environment"]["Variables"]
+    assert refs(env["USER_POOL_ID"]) == {logical_id(template, "AWS::Cognito::UserPool")}
+
+
+def test_delete_account_route_requires_sign_in(template):
+    template.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "DELETE /me", "AuthorizationType": "JWT"})
+
+
+def test_privacy_page_gets_the_contact_address_at_deploy_time():
+    from stack import ROOT, privacy_page
+
+    template = (ROOT / "web" / "legal" / "privacy.html").read_text()
+    assert "{{CONTACT_EMAIL}}" in template and "@" not in template.split("<body>")[1].replace("mailto:", "")  # no address in the repo
+    page = privacy_page("me@example.com")
+    assert "{{" not in page and page.count("me@example.com") == 4  # two mailto links, two visible
+    assert 'href="mailto:a&amp;b@x.com"' in privacy_page("a&b@x.com")  # escaped
+    assert "the app&#x27;s administrator" in privacy_page("")
+    for required in ["Google API Services User Data Policy", "Limited Use", "Delete my account", "London"]:
+        assert required in page
+
+
+def test_contact_address_can_differ_from_the_notification_address():
+    synth(notifyEmail="alerts@example.com", contactEmail="privacy@example.com")  # synthesises cleanly

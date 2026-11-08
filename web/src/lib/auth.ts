@@ -132,6 +132,11 @@ export async function getAccessToken(cfg: AppConfig): Promise<string | null> {
   }
 }
 
+/** Forget this device's session without visiting Cognito (e.g. after the account was deleted). */
+export function forgetSession() {
+  localStorage.removeItem(TOKENS_KEY)
+}
+
 export function currentEmail(): string | null {
   const t = readTokens()
   if (!t) return null

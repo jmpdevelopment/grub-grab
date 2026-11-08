@@ -22,8 +22,16 @@ function setup(props: Partial<Parameters<typeof SettingsView>[0]> = {}) {
 }
 
 describe('SettingsView', () => {
+  it('links to the privacy policy, and offers account deletion only when given a way to do it', () => {
+    setup({ onDeleteAccount: vi.fn() })
+    expect(screen.getByRole('link', { name: 'Privacy policy' })).toHaveAttribute('href', '/privacy.html')
+    expect(screen.getByRole('button', { name: 'Delete my account' })).toBeInTheDocument()
+  })
+
   it('explains local mode and hides account features', () => {
     setup({ mode: 'local', household: { householdId: 'local', inviteCode: null }, email: null })
+    expect(screen.getByRole('link', { name: 'Privacy policy' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete my account' })).not.toBeInTheDocument()
     expect(screen.getByText('Local mode')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
     expect(screen.queryByText('Share with someone')).not.toBeInTheDocument()
