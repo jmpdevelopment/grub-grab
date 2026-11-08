@@ -28,6 +28,8 @@ With no `config.json` present, the app runs in **local mode** and keeps everythi
 
 Prerequisites: AWS credentials configured (`aws configure` or SSO), Node 20+, Python 3.12+.
 
+`./deploy.sh` deploys production, which only accepts sign-ins from the CloudFront URL. To also sign in from `npm run dev` on `http://localhost:5173`, deploy with `./deploy.sh -c dev=true`. Use that for a dev deployment only.
+
 ```bash
 # one-off
 npm install -g aws-cdk
@@ -51,7 +53,7 @@ When it finishes, open the printed `SiteUrl` on your phone:
 - **iPhone (Safari):** Share → *Add to Home Screen*
 - **Android (Chrome):** ⋮ → *Install app*
 
-For two people, the first person signs up and opens **Settings**, which shows a 6-letter invite code. The second person signs up and enters that code under *Join a household*.
+For two people, the first person signs up and opens **Settings**, which shows a 10-character invite code (e.g. `ABCDE-FGH23`). The second person signs up and enters that code under *Join a household*. Each account gets 5 join attempts per hour. **New code** in Settings replaces the code if it has leaked; people who already joined stay in.
 
 **Cost:** at household scale this is effectively free. Everything is pay-per-request, and the Cognito, Lambda and DynamoDB free tiers cover it.
 
@@ -64,7 +66,8 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 | Method | Path | |
 |---|---|---|
 | GET | `/me` | household id + invite code (creates a household on first call) |
-| POST | `/household/join` | `{code}` |
+| POST | `/household/join` | `{code}`, max 5 attempts per user per hour (429 after that) |
+| POST | `/household/invite` | replace the invite code; the old one stops working |
 | GET / POST | `/recipes` | list / create |
 | GET / PUT / DELETE | `/recipes/{id}` | |
 | GET | `/list` | shopping list items |
@@ -74,12 +77,22 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 | DELETE | `/list/items/{id}` | |
 | DELETE | `/list` | clear (`?checked=true` clears only ticked items) |
 
+## Security
+
+- Every API route requires a Cognito access token. All data is scoped to the caller's household, taken from the verified token, never from the request.
+- Invite codes are 10 characters (about 50 bits), with a per-user limit on join attempts and a way to rotate the code.
+- The API is throttled to 10 requests/second (bursts of 20) to cap cost if an account is abused.
+- CloudFront sends a strict Content-Security-Policy (no inline scripts, `frame-ancestors 'none'`), HSTS, `X-Frame-Options: DENY`, `nosniff` and a referrer policy.
+- Sign-in doesn't reveal whether an email has an account. Tokens can be revoked.
+- API access logs (no request bodies or tokens) and Lambda logs are kept for 90 days.
+- `infra/tests` asserts all of the above against the synthesised template.
+
 ## Development
 
 ```bash
 cd api && pip install -r requirements-dev.txt && pytest
 cd web && npm run build && npm run lint
-cd infra && cdk synth
+cd infra && pytest -q tests && cdk synth
 ```
 
 Quantity merging lives in `api/src/grubgrab/aggregate.py`, mirrored in `web/src/lib/aggregate.ts` for local mode. It converts g↔kg, ml↔l and tsp↔tbsp, and only adds quantities together when the ingredient name and unit family match.

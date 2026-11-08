@@ -32,6 +32,7 @@ describe('CloudBackend', () => {
     const { calls } = fakeFetch({
       [`GET ${API}/me`]: ok({ householdId: 'h', inviteCode: 'ABC234' }),
       [`POST ${API}/household/join`]: ok({ householdId: 'h2', inviteCode: 'XYZ234' }),
+      [`POST ${API}/household/invite`]: ok({ householdId: 'h', inviteCode: 'NEWCODE234' }),
       [`GET ${API}/recipes`]: ok([]),
       [`POST ${API}/recipes`]: ok({ id: 'r1' }),
       [`PUT ${API}/recipes/r1`]: ok({ id: 'r1' }),
@@ -48,6 +49,7 @@ describe('CloudBackend', () => {
     expect(b.mode).toBe('cloud')
     expect(await b.me()).toEqual({ householdId: 'h', inviteCode: 'ABC234' })
     expect(await b.joinHousehold('xyz234')).toEqual({ householdId: 'h2', inviteCode: 'XYZ234' })
+    expect(await b.rotateInvite()).toEqual({ householdId: 'h', inviteCode: 'NEWCODE234' })
     await b.listRecipes()
     await b.createRecipe(PASTA)
     await b.updateRecipe('r1', CURRY)
@@ -63,6 +65,7 @@ describe('CloudBackend', () => {
     expect(calls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toEqual([
       'GET /me',
       'POST /household/join',
+      'POST /household/invite',
       'GET /recipes',
       'POST /recipes',
       'PUT /recipes/r1',
@@ -77,8 +80,8 @@ describe('CloudBackend', () => {
     ])
     expect(calls.every((c) => c.headers.authorization === 'Bearer tok')).toBe(true)
     expect(calls[1].body).toEqual({ code: 'xyz234' })
-    expect(calls[7].body).toEqual({ recipeIds: ['r1'], mode: 'append' })
-    expect(calls[9].body).toEqual({ checked: true })
+    expect(calls[8].body).toEqual({ recipeIds: ['r1'], mode: 'append' })
+    expect(calls[10].body).toEqual({ checked: true })
     expect(calls[0].headers['content-type']).toBeUndefined()
     expect(calls[1].headers['content-type']).toBe('application/json')
   })
@@ -130,6 +133,7 @@ describe('LocalBackend', () => {
     expect(b.mode).toBe('local')
     expect(await b.me()).toEqual({ householdId: 'local', inviteCode: null })
     await expect(b.joinHousehold()).rejects.toThrow('Sharing needs the cloud version')
+    await expect(b.rotateInvite()).rejects.toThrow('Sharing needs the cloud version')
   })
 
   it('starts empty, and survives corrupt or unexpected storage', async () => {

@@ -5,11 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: CI only needs to read the code. Jobs can't push, comment or change settings.
+permissions:
+  contents: read
+
 jobs:
   api:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -21,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -36,6 +44,8 @@ jobs:
     needs: web
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -44,7 +54,9 @@ jobs:
           python-version: "3.13"
       - run: npm ci && npm run build
         working-directory: web
-      - run: npm install -g aws-cdk && pip install -r infra/requirements.txt
+      - run: npm install -g aws-cdk && pip install -r infra/requirements.txt pytest
+      - run: pytest -q tests  # security settings + no dependency cycles
+        working-directory: infra
       - run: cdk synth --quiet
         working-directory: infra
         env:

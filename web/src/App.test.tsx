@@ -197,12 +197,16 @@ describe('cloud mode', () => {
       await screen.findByText('Pasta')
       await user.click(tab(/Settings/))
       expect(screen.getByText('me@example.com')).toBeInTheDocument()
-      expect(screen.getByText('ABC234')).toBeInTheDocument()
+      expect(screen.getByText('ABCDE-FGH23')).toBeInTheDocument()
 
-      await user.type(screen.getByPlaceholderText('ABC234'), 'xyz234')
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      await user.click(screen.getByRole('button', { name: 'New code' }))
+      expect(await screen.findByText('ROTAT-ED234')).toBeInTheDocument()
+
+      await user.type(screen.getByPlaceholderText('ABCDE-FGH23'), 'xyz23-abcde')
       await user.click(screen.getByRole('button', { name: 'Join' }))
-      expect(await screen.findByText('XYZ234')).toBeInTheDocument()
-      expect(calls.find((c) => c.url.pathname === '/household/join')!.body).toEqual({ code: 'XYZ234' })
+      expect(await screen.findByText('XYZ23-ABCDE')).toBeInTheDocument()
+      expect(calls.find((c) => c.url.pathname === '/household/join')!.body).toEqual({ code: 'XYZ23ABCDE' })
       await user.click(tab(/Recipes/))
       expect(screen.getByText('Shared stew')).toBeInTheDocument()
 

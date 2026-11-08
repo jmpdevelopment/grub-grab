@@ -6,6 +6,7 @@ import pytest
 
 from grubgrab import handler
 from grubgrab.handler import handle, lambda_handler
+from grubgrab.store import Store
 
 
 def event(route_key, sub="alice", body=None, path=None, query=None, raw_body=None, b64=False):
@@ -130,7 +131,7 @@ class TestEnvelope:
 class TestHouseholds:
     def test_me_is_stable(self, store):
         _, me = call(store, "GET /me")
-        assert len(me["inviteCode"]) == 6
+        assert len(me["inviteCode"]) == 10
         assert call(store, "GET /me")[1] == me
 
     def test_join_shares_data_both_ways(self, store):
@@ -147,7 +148,9 @@ class TestHouseholds:
     @pytest.mark.parametrize(
         "body, expected",
         [
-            ({"code": "NOPE00"}, (404, "Invite code not found")),
+            ({"code": "NOPENOPE22"}, (404, "Invite code not found")),
+            ({"code": "NOPE00"}, (400, "Invite codes are 10 characters")),
+            ({"code": "abcde-fghjk-x"}, (400, "Invite codes are 10 characters")),
             ({}, (400, "Code is required")),
             ({"code": "   "}, (400, "Code is required")),
             ({"code": 123456}, (400, "Code must be text")),
@@ -156,6 +159,40 @@ class TestHouseholds:
     )
     def test_join_errors(self, store, body, expected):
         assert error(store, "POST /household/join", body=body) == expected
+
+    def test_join_accepts_formatted_code(self, store):
+        _, me = call(store, "GET /me", sub="alice")
+        code = me["inviteCode"]
+        status, joined = call(store, "POST /household/join", sub="bob", body={"code": f" {code[:5].lower()}-{code[5:]} "})
+        assert status == 200 and joined == me
+
+    def test_join_is_rate_limited_per_user(self, table):
+        now = [1_000_000.0]
+        s = Store(table, clock=lambda: now[0])
+        _, me = call(s, "GET /me", sub="alice")
+        for _ in range(5):
+            assert call(s, "POST /household/join", sub="mallory", body={"code": "WRONGWRONG"})[0] == 404
+        # Even the right code is refused once the limit is hit, and invalid input still counts.
+        assert error(s, "POST /household/join", sub="mallory", body={"code": me["inviteCode"]}) == (
+            429,
+            "Too many attempts. Try again in an hour.",
+        )
+        assert error(s, "POST /household/join", sub="mallory", body={})[0] == 429
+        # Other users are unaffected.
+        assert call(s, "POST /household/join", sub="bob", body={"code": me["inviteCode"]})[0] == 200
+        # The limit resets the next hour.
+        now[0] += 3600
+        assert call(s, "POST /household/join", sub="mallory", body={"code": me["inviteCode"]})[0] == 200
+
+    def test_rotate_invite(self, store):
+        _, me = call(store, "GET /me", sub="alice")
+        status, rotated = call(store, "POST /household/invite", sub="alice")
+        assert status == 200
+        assert rotated["householdId"] == me["householdId"]
+        assert rotated["inviteCode"] != me["inviteCode"] and len(rotated["inviteCode"]) == 10
+        assert error(store, "POST /household/join", sub="bob", body={"code": me["inviteCode"]})[0] == 404
+        assert call(store, "POST /household/join", sub="bob", body={"code": rotated["inviteCode"]})[0] == 200
+        assert call(store, "GET /me", sub="bob")[1] == rotated
 
 
 # ---- recipes ---------------------------------------------------------------------------

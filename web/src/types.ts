@@ -32,6 +32,7 @@ export interface Backend {
   readonly mode: 'local' | 'cloud'
   me(): Promise<Household>
   joinHousehold(code: string): Promise<Household>
+  rotateInvite(): Promise<Household>
   listRecipes(): Promise<Recipe[]>
   createRecipe(r: RecipeInput): Promise<Recipe>
   updateRecipe(id: string, r: RecipeInput): Promise<Recipe>

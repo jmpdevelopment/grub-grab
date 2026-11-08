@@ -2,6 +2,7 @@
 
 Key layout:
   PK=USER#<sub>        SK=PROFILE          -> householdId
+  PK=USER#<sub>        SK=JOINS#<window>   -> attempts, expiresAt (TTL)  — join rate limit
   PK=INVITE#<code>     SK=INVITE           -> householdId
   PK=HH#<id>           SK=META             -> inviteCode, createdAt
   PK=HH#<id>           SK=RECIPE#<id>      -> title, servings, ingredients, notes
@@ -11,6 +12,7 @@ Key layout:
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import time
 import uuid
@@ -20,12 +22,10 @@ from typing import Callable
 import boto3
 from boto3.dynamodb.conditions import Key
 
-_INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
+INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
+INVITE_LENGTH = 10  # 32^10 ≈ 1.1e15 codes (50 bits)
+JOIN_WINDOW_SECONDS = 3600
 _INVITE_ATTEMPTS = 5
-
-
-def _now() -> int:
-    return int(time.time())
 
 
 def _strip_keys(item: dict) -> dict:
@@ -33,15 +33,29 @@ def _strip_keys(item: dict) -> dict:
 
 
 def random_invite_code() -> str:
-    return "".join(secrets.choice(_INVITE_ALPHABET) for _ in range(6))
+    return "".join(secrets.choice(INVITE_ALPHABET) for _ in range(INVITE_LENGTH))
+
+
+def normalise_invite_code(raw: str) -> str:
+    """Accept codes typed with spaces, dashes or lower case ("abcde-fghjk")."""
+    return re.sub(r"[^A-Za-z0-9]", "", raw).upper()
 
 
 class Store:
-    def __init__(self, table=None, new_invite_code: Callable[[], str] = random_invite_code):
+    def __init__(
+        self,
+        table=None,
+        new_invite_code: Callable[[], str] = random_invite_code,
+        clock: Callable[[], float] = time.time,
+    ):
         if table is None:
             table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
         self.table = table
         self._new_invite_code = new_invite_code
+        self._clock = clock
+
+    def _now(self) -> int:
+        return int(self._clock())
 
     # ---- households -------------------------------------------------------
 
@@ -70,19 +84,44 @@ class Store:
         if not self._put_if_absent({**key, "householdId": household_id}):
             return self.get_or_create_household(user_sub)
         code = self._claim_invite_code(household_id)
-        self.table.put_item(Item={"PK": f"HH#{household_id}", "SK": "META", "inviteCode": code, "createdAt": _now()})
+        self.table.put_item(Item={"PK": f"HH#{household_id}", "SK": "META", "inviteCode": code, "createdAt": self._now()})
         return {"householdId": household_id, "inviteCode": code}
 
     def get_household(self, household_id: str) -> dict:
         meta = self.table.get_item(Key={"PK": f"HH#{household_id}", "SK": "META"}).get("Item") or {}
         return {"householdId": household_id, "inviteCode": meta.get("inviteCode")}
 
+    def record_join_attempt(self, user_sub: str) -> int:
+        """Count a join attempt in the current hour; returns attempts so far. Old windows expire via TTL."""
+        window = self._now() // JOIN_WINDOW_SECONDS
+        resp = self.table.update_item(
+            Key={"PK": f"USER#{user_sub}", "SK": f"JOINS#{window}"},
+            UpdateExpression="ADD attempts :one SET expiresAt = if_not_exists(expiresAt, :exp)",
+            ExpressionAttributeValues={":one": 1, ":exp": (window + 2) * JOIN_WINDOW_SECONDS},
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(resp["Attributes"]["attempts"])
+
     def join_household(self, user_sub: str, code: str) -> dict | None:
-        invite = self.table.get_item(Key={"PK": f"INVITE#{code.strip().upper()}", "SK": "INVITE"}).get("Item")
+        invite = self.table.get_item(Key={"PK": f"INVITE#{code}", "SK": "INVITE"}).get("Item")
         if not invite:
             return None
         self.table.put_item(Item={"PK": f"USER#{user_sub}", "SK": "PROFILE", "householdId": invite["householdId"]})
         return self.get_household(invite["householdId"])
+
+    def rotate_invite(self, household_id: str) -> dict:
+        """Issue a new invite code; the old one stops working immediately."""
+        code = self._claim_invite_code(household_id)
+        resp = self.table.update_item(
+            Key={"PK": f"HH#{household_id}", "SK": "META"},
+            UpdateExpression="SET inviteCode = :c",
+            ExpressionAttributeValues={":c": code},
+            ReturnValues="UPDATED_OLD",
+        )
+        old = resp.get("Attributes", {}).get("inviteCode")
+        if old:
+            self.table.delete_item(Key={"PK": f"INVITE#{old}", "SK": "INVITE"})
+        return {"householdId": household_id, "inviteCode": code}
 
     def household_for(self, user_sub: str) -> str:
         return self.get_or_create_household(user_sub)["householdId"]
@@ -120,7 +159,7 @@ class Store:
             "servings": recipe.get("servings"),
             "notes": recipe.get("notes", ""),
             "ingredients": recipe["ingredients"],
-            "updatedAt": _now(),
+            "updatedAt": self._now(),
         }
         self.table.put_item(Item=item)
         return _strip_keys(item)

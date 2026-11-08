@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { formatInviteCode, INVITE_LENGTH, normaliseInviteCode } from '../lib/invite'
 import type { Household } from '../types'
 
 interface Props {
@@ -6,23 +7,39 @@ interface Props {
   household: Household | null
   email: string | null
   onJoin: (code: string) => Promise<void>
+  onRotate: () => Promise<void>
   onSignOut: () => void
 }
 
-export function SettingsView({ mode, household, email, onJoin, onSignOut }: Props) {
+export function SettingsView({ mode, household, email, onJoin, onRotate, onSignOut }: Props) {
   const [code, setCode] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
+  const [shareMsg, setShareMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   const join = async () => {
     setBusy(true)
     setMsg(null)
     try {
-      await onJoin(code)
+      await onJoin(normaliseInviteCode(code))
       setMsg('Joined! You now share recipes and the list.')
       setCode('')
     } catch (e) {
       setMsg((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const rotate = async () => {
+    if (!confirm('Make a new code? The current one will stop working. People who already joined stay in.')) return
+    setBusy(true)
+    setShareMsg(null)
+    try {
+      await onRotate()
+      setShareMsg('New code ready.')
+    } catch (e) {
+      setShareMsg((e as Error).message)
     } finally {
       setBusy(false)
     }
@@ -47,13 +64,19 @@ export function SettingsView({ mode, household, email, onJoin, onSignOut }: Prop
             <section className="panel">
               <h3>Account</h3>
               <p>{email ?? 'Signed in'}</p>
-              <button className="btn secondary" onClick={onSignOut}>Sign out</button>
+              <button className="btn secondary" onClick={onSignOut}>
+                Sign out
+              </button>
             </section>
 
             <section className="panel">
               <h3>Share with someone</h3>
               <p className="muted">Give them this code. Once they enter it, you'll both see the same recipes and list.</p>
-              <p className="invite">{household?.inviteCode ?? '…'}</p>
+              <p className="invite">{household?.inviteCode ? formatInviteCode(household.inviteCode) : '…'}</p>
+              <button className="btn secondary" disabled={busy || !household} onClick={rotate}>
+                New code
+              </button>
+              {shareMsg && <p className="hint">{shareMsg}</p>}
             </section>
 
             <section className="panel">
@@ -63,11 +86,15 @@ export function SettingsView({ mode, household, email, onJoin, onSignOut }: Prop
                 <input
                   value={code}
                   onChange={(e) => setCode(e.target.value.toUpperCase())}
-                  placeholder="ABC234"
-                  maxLength={6}
+                  placeholder="ABCDE-FGH23"
+                  maxLength={INVITE_LENGTH + 4}
                   autoCapitalize="characters"
+                  autoComplete="off"
+                  spellCheck={false}
                 />
-                <button className="btn" disabled={code.length < 6 || busy} onClick={join}>Join</button>
+                <button className="btn" disabled={normaliseInviteCode(code).length !== INVITE_LENGTH || busy} onClick={join}>
+                  Join
+                </button>
               </div>
               {msg && <p className="hint">{msg}</p>}
             </section>

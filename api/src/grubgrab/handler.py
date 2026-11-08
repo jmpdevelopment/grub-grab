@@ -8,13 +8,14 @@ import json
 from decimal import Decimal, InvalidOperation
 
 from .aggregate import aggregate, combine
-from .store import Store
+from .store import INVITE_LENGTH, Store, normalise_invite_code
 
 MAX_TEXT = 200
 MAX_NOTES = 10_000
 MAX_INGREDIENTS = 200
 MAX_RECIPES_PER_LIST = 50
 MAX_QUANTITY = Decimal(1_000_000)
+MAX_JOIN_ATTEMPTS_PER_HOUR = 5
 
 _store: Store | None = None
 
@@ -180,8 +181,15 @@ def route(event: dict, store: Store) -> dict:
     if route_key == "GET /me":
         return _resp(200, store.get_or_create_household(sub))
     if route_key == "POST /household/join":
-        code = _text(_body(event).get("code"), "Code", required=True, max_len=20)
+        # Count every attempt before looking anything up, so codes can't be brute-forced.
+        if store.record_join_attempt(sub) > MAX_JOIN_ATTEMPTS_PER_HOUR:
+            raise ApiError(429, "Too many attempts. Try again in an hour.")
+        code = normalise_invite_code(_text(_body(event).get("code"), "Code", required=True, max_len=20))
+        if len(code) != INVITE_LENGTH:
+            raise ApiError(400, f"Invite codes are {INVITE_LENGTH} characters")
         return _resp(200, _require(store.join_household(sub, code), "Invite code"))
+    if route_key == "POST /household/invite":
+        return _resp(200, store.rotate_invite(store.household_for(sub)))
 
     hh = store.household_for(sub)
 

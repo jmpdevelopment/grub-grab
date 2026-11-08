@@ -20,7 +20,7 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
   const state: ApiState = {
     recipes: [],
     items: [],
-    household: { householdId: 'h1', inviteCode: 'ABC234' },
+    household: { householdId: 'h1', inviteCode: 'ABCDEFGH23' },
     ...initial,
   }
   const itemId = (url: URL) => url.pathname.split('/').pop()!
@@ -31,6 +31,10 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
     [`POST ${API}/household/join`]: (_u, init) => {
       state.household = { householdId: 'h2', inviteCode: body(init).code }
       state.recipes = [{ id: id(), title: 'Shared stew', servings: null, notes: '', ingredients: [] }]
+      return json(state.household)
+    },
+    [`POST ${API}/household/invite`]: () => {
+      state.household = { ...state.household, inviteCode: 'ROTATED234' }
       return json(state.household)
     },
     [`GET ${API}/recipes`]: () => json(state.recipes),

@@ -33,6 +33,7 @@ export class CloudBackend implements Backend {
 
   me = () => this.req<Household>('GET', '/me')
   joinHousehold = (code: string) => this.req<Household>('POST', '/household/join', { code })
+  rotateInvite = () => this.req<Household>('POST', '/household/invite')
   listRecipes = () => this.req<Recipe[]>('GET', '/recipes')
   createRecipe = (r: RecipeInput) => this.req<Recipe>('POST', '/recipes', r)
   updateRecipe = (id: string, r: RecipeInput) => this.req<Recipe>('PUT', `/recipes/${id}`, r)
@@ -83,6 +84,9 @@ export class LocalBackend implements Backend {
     return { householdId: 'local', inviteCode: null }
   }
   async joinHousehold(): Promise<Household> {
+    throw new Error('Sharing needs the cloud version — see the README to deploy.')
+  }
+  async rotateInvite(): Promise<Household> {
     throw new Error('Sharing needs the cloud version — see the README to deploy.')
   }
   async listRecipes() {

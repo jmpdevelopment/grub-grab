@@ -184,6 +184,7 @@ export default function App() {
             household={household}
             email={currentEmail()}
             onSignOut={() => signOut(cfg!)} // the button only exists in cloud mode, where cfg is set
+            onRotate={async () => setHousehold(await b.rotateInvite())}
             onJoin={async (code) => {
               setHousehold(await b.joinHousehold(code))
               await refresh()

@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from grubgrab.store import Store, random_invite_code
+from grubgrab.store import JOIN_WINDOW_SECONDS, Store, normalise_invite_code, random_invite_code
 
 
 def codes(*values):
@@ -46,7 +46,7 @@ class LateProfileTable:
 class TestInviteCodes:
     def test_random_code_shape(self):
         code = random_invite_code()
-        assert len(code) == 6
+        assert len(code) == 10
         assert set(code) <= set("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
         assert not set(code) & set("01OI")
 
@@ -78,13 +78,49 @@ class TestHouseholds:
     def test_household_without_meta(self, store):
         assert store.get_household("missing") == {"householdId": "missing", "inviteCode": None}
 
-    def test_join_normalises_code(self, store):
+    def test_join(self, store):
         hh = store.get_or_create_household("alice")
-        assert store.join_household("bob", f"  {hh['inviteCode'].lower()} ") == hh
+        assert store.join_household("bob", hh["inviteCode"]) == hh
         assert store.household_for("bob") == hh["householdId"]
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [("abcde-fghjk", "ABCDEFGHJK"), ("  ABCDE FGHJK ", "ABCDEFGHJK"), ("a.b_c", "ABC"), ("", "")],
+    )
+    def test_normalise_code(self, raw, expected):
+        assert normalise_invite_code(raw) == expected
 
     def test_join_unknown_code(self, store):
         assert store.join_household("bob", "NOPE00") is None
+
+
+class TestRotateInvite:
+    def test_new_code_works_and_old_one_stops(self, table):
+        s = Store(table, codes("OLDOLDOLD2", "NEWNEWNEW2"))
+        hh = s.get_or_create_household("alice")
+        rotated = s.rotate_invite(hh["householdId"])
+        assert rotated == {"householdId": hh["householdId"], "inviteCode": "NEWNEWNEW2"}
+        assert s.get_household(hh["householdId"])["inviteCode"] == "NEWNEWNEW2"
+        assert s.join_household("bob", "OLDOLDOLD2") is None
+        assert s.join_household("bob", "NEWNEWNEW2")["householdId"] == hh["householdId"]
+
+    def test_household_without_a_previous_code(self, table):
+        s = Store(table, codes("FIRSTCODE2"))
+        assert s.rotate_invite("bare")["inviteCode"] == "FIRSTCODE2"
+
+
+class TestJoinAttempts:
+    def test_counts_per_user_per_hour_and_expires(self, table):
+        now = [JOIN_WINDOW_SECONDS * 100 + 5]
+        s = Store(table, clock=lambda: now[0])
+        assert [s.record_join_attempt("alice") for _ in range(3)] == [1, 2, 3]
+        assert s.record_join_attempt("bob") == 1
+
+        item = table.get_item(Key={"PK": "USER#alice", "SK": "JOINS#100"})["Item"]
+        assert item["expiresAt"] == JOIN_WINDOW_SECONDS * 102  # TTL cleans up after the window
+
+        now[0] += JOIN_WINDOW_SECONDS  # next hour starts fresh
+        assert s.record_join_attempt("alice") == 1
 
 
 class TestRecipes:
