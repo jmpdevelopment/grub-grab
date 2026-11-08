@@ -497,3 +497,102 @@ class TestItems:
         call(store, "PATCH /list/items/{id}", path={"id": done["id"]}, body={"checked": True})
         assert call(store, "DELETE /list", query=query) == (204, None)
         assert [i["name"] for i in call(store, "GET /list")[1]] == remaining
+
+
+# ---- per-household limits ------------------------------------------------------------------
+
+
+class TestLimits:
+    def test_recipe_limit(self, store, monkeypatch):
+        monkeypatch.setattr(handler, "MAX_RECIPES", 2)
+        create(store, PASTA)
+        create(store, CURRY)
+        assert error(store, "POST /recipes", body=PASTA) == (
+            409,
+            "You've reached the limit of 2 recipes. Delete some to add more.",
+        )
+        assert call(store, "POST /recipes", sub="bob", body=PASTA)[0] == 201  # per household, not global
+
+    def test_list_item_limit(self, store, monkeypatch):
+        monkeypatch.setattr(handler, "MAX_LIST_ITEMS", 1)
+        assert call(store, "POST /list/items", body={"name": "Milk"})[0] == 201
+        assert error(store, "POST /list/items", body={"name": "Eggs"}) == (409, "The list is full (1 items). Clear some to add more.")
+
+    @pytest.mark.parametrize(
+        "mode, extra_ingredients",
+        [("replace", 6), ("append", 1)],  # replace: 6 alone is too many; append: 5 already there + 1 more
+    )
+    def test_an_oversized_list_is_refused_before_anything_is_written(self, store, monkeypatch, mode, extra_ingredients):
+        monkeypatch.setattr(handler, "MAX_LIST_ITEMS", 5)
+        ids = [create(store, PASTA)["id"], create(store, CURRY)["id"]]  # 5 distinct ingredients together
+        assert len(call(store, "POST /list/generate", body={"recipeIds": ids})[1]) == 5
+        first = call(store, "GET /list")[1][0]["id"]
+        call(store, "PATCH /list/items/{id}", path={"id": first}, body={"checked": True})  # ticked items count too
+        before = call(store, "GET /list")[1]
+        big = create(store, {"title": "Big", "ingredients": [{"name": f"thing {n}"} for n in range(extra_ingredients)]})
+        assert error(store, "POST /list/generate", body={"recipeIds": [big["id"]], "mode": mode}) == (
+            409,
+            "That would make the list longer than 5 items",
+        )
+        assert call(store, "GET /list")[1] == before  # nothing was written
+
+
+# ---- sign-up approval (admins) ---------------------------------------------------------------
+
+
+def admin_call(store, route_key, groups="[admins]", **kwargs):
+    evt = event(route_key, **kwargs)
+    evt["requestContext"]["authorizer"]["jwt"]["claims"]["cognito:groups"] = groups
+    resp = handle(evt, store)
+    return resp["statusCode"], (json.loads(resp["body"]) if resp["body"] else None)
+
+
+class TestAdmin:
+    @pytest.fixture
+    def requests(self, store):
+        store.request_access("Google_1", "first@x.com", "First")
+        store.request_access("Google_2", "second@x.com", "Second")
+        return store
+
+    @pytest.mark.parametrize("groups", ["[admins]", "[family admins]", "admins", ["admins"], "[family,admins]"])
+    def test_admins_see_pending_requests_and_a_count(self, requests, groups):
+        status, listed = admin_call(requests, "GET /admin/requests", groups=groups)
+        assert status == 200 and {r["username"] for r in listed} == {"Google_1", "Google_2"}
+        _, me = admin_call(requests, "GET /me", groups=groups)
+        assert me["admin"] is True and me["pendingRequests"] == 2
+
+    @pytest.mark.parametrize("groups", [None, "", "[]", "[family]", "[administrators]", ["family"]])
+    def test_everyone_else_is_refused(self, requests, groups):
+        for route, path in [
+            ("GET /admin/requests", None),
+            ("POST /admin/requests/{username}/approve", {"username": "Google_1"}),
+            ("POST /admin/requests/{username}/decline", {"username": "Google_1"}),
+            ("POST /admin/requests/decline-pending", None),
+        ]:
+            status, body = admin_call(requests, route, groups=groups, path=path)
+            assert (status, body) == (403, {"error": "Only admins can do that"})
+        _, me = admin_call(requests, "GET /me", groups=groups)
+        assert "admin" not in me and "pendingRequests" not in me
+        assert len(requests.access_requests()) == 2  # nothing changed
+
+    def test_approve_decline_and_decline_all(self, requests):
+        status, approved = admin_call(requests, "POST /admin/requests/{username}/approve", path={"username": "Google_1"})
+        assert status == 200 and approved["status"] == "approved"
+        _, declined = admin_call(requests, "POST /admin/requests/{username}/decline", path={"username": "Google_2"})
+        assert declined["status"] == "declined"
+        assert admin_call(requests, "GET /admin/requests")[1] == []
+
+        requests.request_access("Google_3", "bot@x.com", "")
+        requests.request_access("Google_4", "bot2@x.com", "")
+        assert admin_call(requests, "POST /admin/requests/decline-pending") == (200, {"declined": 2})
+
+    def test_unknown_request_and_route(self, requests):
+        assert admin_call(requests, "POST /admin/requests/{username}/approve", path={"username": "Google_x"}) == (
+            404,
+            {"error": "Request not found"},
+        )
+        assert admin_call(requests, "GET /admin/nope") == (404, {"error": "No route for GET /admin/nope"})
+
+    def test_admin_without_a_household_can_still_review(self, requests):
+        status, me = admin_call(requests, "GET /me", sub="newadmin")
+        assert status == 200 and me["householdId"] is None and me["pendingRequests"] == 2

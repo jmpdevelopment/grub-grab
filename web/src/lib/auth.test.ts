@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CFG, fakeFetch, fakeLocation, json, jwt, saveTokens } from '../test/fakes'
-import { completeSignIn, currentEmail, getAccessToken, signIn, signOut } from './auth'
+import { completeSignIn, currentEmail, getAccessToken, SignInNotice, signIn, signOut } from './auth'
 
 const TOKEN_URL = 'POST https://auth.example.com/oauth2/token'
 const tokenResponse = (over = {}) =>
@@ -31,15 +31,33 @@ describe('signIn', () => {
 })
 
 describe('signOut', () => {
-  it('forgets tokens and redirects to the hosted logout', () => {
+  const REVOKE_URL = 'POST https://auth.example.com/oauth2/revoke'
+
+  it('revokes the session, forgets tokens and redirects to the hosted logout', async () => {
     const { assign } = fakeLocation()
-    saveTokens()
-    signOut(CFG)
+    saveTokens({ refreshToken: 'refresh-9' })
+    const { calls } = fakeFetch({ [REVOKE_URL]: () => new Response(null, { status: 200 }) })
+    await signOut(CFG)
+    expect(calls[0].body).toEqual({ token: 'refresh-9', client_id: 'client-123' })
     expect(localStorage.getItem('gg.tokens')).toBeNull()
     const url = new URL(assign.mock.calls[0][0])
     expect(url.pathname).toBe('/logout')
     expect(url.searchParams.get('logout_uri')).toBe('http://localhost/')
     expect(url.searchParams.get('client_id')).toBe('client-123')
+  })
+
+  it('still signs out when revoking fails (offline), and skips it without a refresh token', async () => {
+    const { assign } = fakeLocation()
+    saveTokens()
+    fakeFetch({ [REVOKE_URL]: () => Promise.reject(new TypeError('offline')) })
+    await signOut(CFG)
+    expect(assign).toHaveBeenCalledTimes(1)
+
+    saveTokens({ refreshToken: undefined })
+    const { fn } = fakeFetch({})
+    await signOut(CFG)
+    expect(fn).not.toHaveBeenCalled()
+    expect(assign).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -75,6 +93,32 @@ describe('completeSignIn', () => {
     const { calls } = fakeFetch({ [TOKEN_URL]: () => tokenResponse() })
     await completeSignIn(CFG)
     expect((calls[0].body as Record<string, string>).code_verifier).toBe('')
+  })
+
+  describe('when Cognito sends back an error', () => {
+    const back = (query: string) => fakeLocation(`http://localhost/?${query}`)
+
+    it.each([
+      ['ACCESS_PENDING', "Thanks! Your request to join has been sent. You'll be able to sign in once it's approved."],
+      ['ACCESS_DECLINED', "This Google account hasn't been approved for Grub Grab."],
+    ])('turns the approval trigger code %s into a friendly notice', async (code, message) => {
+      back(`error_description=PreSignUp+failed+with+error+${code}.+&error=invalid_request`)
+      const { fn } = fakeFetch({})
+      const err = await completeSignIn(CFG).catch((e) => e)
+      expect(err).toBeInstanceOf(SignInNotice)
+      expect(err.message).toBe(message)
+      expect(window.history.replaceState).toHaveBeenCalledWith({}, '', '/')
+      expect(fn).not.toHaveBeenCalled()
+    })
+
+    it('reports any other error as a failure', async () => {
+      back('error=access_denied&error_description=User+cancelled')
+      const err = await completeSignIn(CFG).catch((e) => e)
+      expect(err).not.toBeInstanceOf(SignInNotice)
+      expect(err.message).toBe('Sign-in failed: User cancelled')
+      back('error=server_error')
+      await expect(completeSignIn(CFG)).rejects.toThrow('Sign-in failed: server_error')
+    })
   })
 
   it('throws a readable error when the exchange fails', async () => {

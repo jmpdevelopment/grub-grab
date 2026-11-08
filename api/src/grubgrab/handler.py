@@ -20,6 +20,10 @@ MAX_TAG_LEN = 30
 MAX_RECIPES_PER_LIST = 50
 MAX_QUANTITY = Decimal(1_000_000)
 MAX_JOIN_ATTEMPTS_PER_HOUR = 5
+# Per-household caps: far above real use, low enough that one account can't run up a storage bill.
+MAX_RECIPES = 500
+MAX_LIST_ITEMS = 500
+ADMIN_GROUP = "admins"  # Cognito group; members approve sign-up requests
 
 _store: Store | None = None
 
@@ -181,19 +185,41 @@ def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
             raise ApiError(404, f"Recipe {rid} not found")
         recipes.append(recipe)
 
+    current = store.list_items(hh)
     if mode == "replace":
-        store.clear_items(hh)
+        remove, kept = current, 0
         new_items = aggregate(recipes)
     else:
         # Fold the new ingredients into what's still unticked; ticked items are left alone.
-        unticked = [i for i in store.list_items(hh) if not i.get("checked")]
-        new_items = combine(unticked + aggregate(recipes))
-        for item in unticked:
-            store.delete_item(hh, item["id"])
-
-    for item in new_items:
-        store.add_item(hh, item["name"], item["quantity"], item["unit"], item["recipes"])
+        remove = [i for i in current if not i.get("checked")]
+        kept = len(current) - len(remove)
+        new_items = combine(remove + aggregate(recipes))
+    # Check the size before writing anything, so an oversized request costs nothing.
+    if kept + len(new_items) > MAX_LIST_ITEMS:
+        raise ApiError(409, f"That would make the list longer than {MAX_LIST_ITEMS} items")
+    store.replace_items(hh, [i["id"] for i in remove], new_items)
     return store.list_items(hh)
+
+
+def _is_admin(claims: dict) -> bool:
+    # API Gateway passes list claims as text, e.g. "[admins]" or "[admins other]".
+    groups = claims.get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = groups.strip("[]").replace(",", " ").split()
+    return ADMIN_GROUP in groups
+
+
+def _admin_route(route_key: str, params: dict, claims: dict, store: Store) -> dict:
+    if not _is_admin(claims):
+        raise ApiError(403, "Only admins can do that")
+    if route_key == "GET /admin/requests":
+        return _resp(200, store.access_requests())
+    if route_key == "POST /admin/requests/decline-pending":
+        return _resp(200, {"declined": store.decline_all_pending()})
+    if route_key in ("POST /admin/requests/{username}/approve", "POST /admin/requests/{username}/decline"):
+        decided = store.decide_access(params["username"], approve=route_key.endswith("/approve"))
+        return _resp(200, _require(decided, "Request"))
+    raise ApiError(404, f"No route for {route_key}")
 
 
 def _require(found, what: str):
@@ -211,9 +237,14 @@ def route(event: dict, store: Store) -> dict:
     route_key = event.get("routeKey", "")
     params = event.get("pathParameters") or {}
 
+    if route_key.split(" ", 1)[-1].startswith("/admin/"):
+        return _admin_route(route_key, params, claims, store)
     if route_key == "GET /me":
         # New users have no household until they start one or join one (the app asks on first sign-in).
-        return _resp(200, store.find_household(sub) or {"householdId": None, "inviteCode": None})
+        me = store.find_household(sub) or {"householdId": None, "inviteCode": None}
+        if _is_admin(claims):
+            me = {**me, "admin": True, "pendingRequests": len(store.access_requests())}
+        return _resp(200, me)
     if route_key == "POST /household":
         return _resp(200, store.create_household(sub))
     if route_key == "POST /household/join":
@@ -235,7 +266,10 @@ def route(event: dict, store: Store) -> dict:
     if route_key == "GET /recipes":
         return _resp(200, store.list_recipes(hh))
     if route_key == "POST /recipes":
-        return _resp(201, store.put_recipe(hh, _validate_recipe(_body(event))))
+        recipe = _validate_recipe(_body(event))
+        if store.count_recipes(hh) >= MAX_RECIPES:
+            raise ApiError(409, f"You've reached the limit of {MAX_RECIPES} recipes. Delete some to add more.")
+        return _resp(201, store.put_recipe(hh, recipe))
     if route_key == "GET /recipes/{id}":
         return _resp(200, _require(store.get_recipe(hh, params["id"]), "Recipe"))
     if route_key == "PUT /recipes/{id}":
@@ -253,6 +287,8 @@ def route(event: dict, store: Store) -> dict:
     if route_key == "POST /list/items":
         data = _body(event)
         name = _text(data.get("name"), "Name", required=True)
+        if store.count_items(hh) >= MAX_LIST_ITEMS:
+            raise ApiError(409, f"The list is full ({MAX_LIST_ITEMS} items). Clear some to add more.")
         return _resp(201, store.add_item(hh, name, _quantity(data.get("quantity")), _text(data.get("unit"), "Unit")))
     if route_key == "PATCH /list/items/{id}":
         checked = _body(event).get("checked")

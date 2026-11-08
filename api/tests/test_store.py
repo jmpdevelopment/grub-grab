@@ -2,7 +2,14 @@ from decimal import Decimal
 
 import pytest
 
-from grubgrab.store import JOIN_WINDOW_SECONDS, Store, normalise_invite_code, random_invite_code
+from grubgrab.store import (
+    DECLINED_REQUEST_TTL,
+    JOIN_WINDOW_SECONDS,
+    PENDING_REQUEST_TTL,
+    Store,
+    normalise_invite_code,
+    random_invite_code,
+)
 
 
 def codes(*values):
@@ -144,6 +151,73 @@ class TestRotateInvite:
     def test_household_without_a_previous_code(self, table):
         s = Store(table, codes("FIRSTCODE2"))
         assert s.rotate_invite("bare")["inviteCode"] == "FIRSTCODE2"
+
+
+class TestAccessRequests:
+    def test_requests_are_listed_newest_first_and_expire(self, table):
+        now = [100.0]
+        s = Store(table, clock=lambda: now[0])
+        assert s.request_access("Google_1", "a@x.com", "A") == ("pending", True)
+        now[0] = 200.0
+        s.request_access("Google_2", "b@x.com", "B")
+        assert [r["username"] for r in s.access_requests()] == ["Google_2", "Google_1"]
+        item = table.get_item(Key={"PK": "ACCESS", "SK": "REQ#Google_1"})["Item"]
+        assert item["expiresAt"] == 100 + PENDING_REQUEST_TTL  # unanswered requests tidy themselves up
+
+    def test_long_details_are_trimmed(self, store):
+        store.request_access("Google_1", "e" * 300, "n" * 300)
+        r = store.access_requests()[0]
+        assert len(r["email"]) == 200 and len(r["name"]) == 200
+
+    def test_approve_and_decline(self, table):
+        s = Store(table, clock=lambda: 50.0)
+        s.request_access("Google_1", "a@x.com", "A")
+        s.request_access("Google_2", "b@x.com", "B")
+        assert s.decide_access("Google_1", approve=True) == {"username": "Google_1", "email": "a@x.com", "name": "A", "status": "approved"}
+        assert "expiresAt" not in table.get_item(Key={"PK": "ACCESS", "SK": "REQ#Google_1"})["Item"]
+        assert s.decide_access("Google_2", approve=False)["status"] == "declined"
+        assert table.get_item(Key={"PK": "ACCESS", "SK": "REQ#Google_2"})["Item"]["expiresAt"] == 50 + DECLINED_REQUEST_TTL
+        assert s.access_requests() == []
+        assert s.request_access("Google_2", "b@x.com", "B") == ("declined", False)
+        assert s.decide_access("Google_nobody", approve=True) is None
+
+    def test_decline_all_pending(self, store):
+        for n in range(3):
+            store.request_access(f"Google_{n}", f"{n}@x.com", "")
+        store.decide_access("Google_0", approve=True)
+        assert store.decline_all_pending() == 2
+        assert store.access_requests() == []
+        assert store.request_access("Google_0", "", "") == ("approved", False)
+
+    def test_parallel_first_requests(self, table):
+        class LateRequestTable:
+            """The first read misses, then a parallel attempt writes the request before ours."""
+
+            raced = False
+
+            def get_item(self, **kwargs):
+                if not self.raced:
+                    self.raced = True
+                    table.put_item(Item={**kwargs["Key"], "status": "pending"})
+                    return {}
+                return table.get_item(**kwargs)
+
+            def __getattr__(self, name):
+                return getattr(table, name)
+
+        assert Store(LateRequestTable()).request_access("Google_1", "a@x.com", "A") == ("pending", False)
+
+
+class TestListWrites:
+    def test_counts_and_batched_replace(self, store):
+        assert (store.count_recipes("h"), store.count_items("h")) == (0, 0)
+        store.put_recipe("h", {"title": "Soup", "ingredients": []})
+        old = store.add_item("h", "Milk", None, "")
+        store.add_item("h", "Eggs", Decimal(6), "")
+        store.replace_items("h", [old["id"]], [{"name": "Bread", "quantity": None, "unit": None, "recipes": None}])
+        assert sorted(i["name"] for i in store.list_items("h")) == ["Bread", "Eggs"]
+        assert store.list_items("h")[0]["unit"] == "" and store.list_items("h")[0]["recipes"] == []
+        assert (store.count_recipes("h"), store.count_items("h")) == (1, 2)
 
 
 class TestJoinAttempts:

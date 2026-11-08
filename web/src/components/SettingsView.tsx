@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { type ReactNode, useState } from 'react'
 import { formatInviteCode } from '../lib/invite'
 import type { Household } from '../types'
 import { JoinForm } from './JoinForm'
@@ -10,9 +10,11 @@ interface Props {
   onJoin: (code: string) => Promise<void>
   onRotate: () => Promise<void>
   onSignOut: () => void
+  /** Shown to admins only: the sign-up requests panel. */
+  adminPanel?: ReactNode
 }
 
-export function SettingsView({ mode, household, email, onJoin, onRotate, onSignOut }: Props) {
+export function SettingsView({ mode, household, email, onJoin, onRotate, onSignOut, adminPanel }: Props) {
   const [shareMsg, setShareMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -46,6 +48,7 @@ export function SettingsView({ mode, household, email, onJoin, onRotate, onSignO
           </section>
         ) : (
           <>
+            {adminPanel}
             <section className="panel">
               <h3>Account</h3>
               <p>{email ?? 'Signed in'}</p>

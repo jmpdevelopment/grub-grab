@@ -1,4 +1,4 @@
-import type { Backend, Household, ListItem, Recipe, RecipeInput } from '../types'
+import type { AccessRequest, Backend, Household, ListItem, Recipe, RecipeInput } from '../types'
 import { aggregate, combine } from './aggregate'
 import { getAccessToken } from './auth'
 import type { AppConfig } from './config'
@@ -35,6 +35,11 @@ export class CloudBackend implements Backend {
   createHousehold = () => this.req<Household>('POST', '/household')
   joinHousehold = (code: string) => this.req<Household>('POST', '/household/join', { code })
   rotateInvite = () => this.req<Household>('POST', '/household/invite')
+  listAccessRequests = () => this.req<AccessRequest[]>('GET', '/admin/requests')
+  decideAccess = async (username: string, approve: boolean) => {
+    await this.req('POST', `/admin/requests/${encodeURIComponent(username)}/${approve ? 'approve' : 'decline'}`)
+  }
+  declineAllPending = async () => (await this.req<{ declined: number }>('POST', '/admin/requests/decline-pending')).declined
   listRecipes = () => this.req<Recipe[]>('GET', '/recipes')
   createRecipe = (r: RecipeInput) => this.req<Recipe>('POST', '/recipes', r)
   updateRecipe = (id: string, r: RecipeInput) => this.req<Recipe>('PUT', `/recipes/${id}`, r)
@@ -92,6 +97,14 @@ export class LocalBackend implements Backend {
   }
   async rotateInvite(): Promise<Household> {
     throw new Error('Sharing needs the cloud version — see the README to deploy.')
+  }
+  // Nobody signs up in local mode, so there is never anyone to approve.
+  async listAccessRequests(): Promise<AccessRequest[]> {
+    return []
+  }
+  async decideAccess(): Promise<void> {}
+  async declineAllPending(): Promise<number> {
+    return 0
   }
   async listRecipes() {
     return this.load().recipes.sort((a, b) => a.title.localeCompare(b.title))

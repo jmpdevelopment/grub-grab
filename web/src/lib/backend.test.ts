@@ -31,6 +31,10 @@ describe('CloudBackend', () => {
     saveTokens({ accessToken: 'tok' })
     const { calls } = fakeFetch({
       [`GET ${API}/me`]: ok({ householdId: 'h', inviteCode: 'ABC234' }),
+      [`GET ${API}/admin/requests`]: ok([]),
+      [`POST ${API}/admin/requests/Google_1%20x/approve`]: ok({ status: 'approved' }),
+      [`POST ${API}/admin/requests/Google_2/decline`]: ok({ status: 'declined' }),
+      [`POST ${API}/admin/requests/decline-pending`]: ok({ declined: 3 }),
       [`POST ${API}/household`]: ok({ householdId: 'h', inviteCode: 'ABC234' }),
       [`POST ${API}/household/join`]: ok({ householdId: 'h2', inviteCode: 'XYZ234' }),
       [`POST ${API}/household/invite`]: ok({ householdId: 'h', inviteCode: 'NEWCODE234' }),
@@ -49,6 +53,10 @@ describe('CloudBackend', () => {
 
     expect(b.mode).toBe('cloud')
     expect(await b.me()).toEqual({ householdId: 'h', inviteCode: 'ABC234' })
+    expect(await b.listAccessRequests()).toEqual([])
+    expect(await b.decideAccess('Google_1 x', true)).toBeUndefined()
+    expect(await b.decideAccess('Google_2', false)).toBeUndefined()
+    expect(await b.declineAllPending()).toBe(3)
     expect(await b.createHousehold()).toEqual({ householdId: 'h', inviteCode: 'ABC234' })
     expect(await b.joinHousehold('xyz234')).toEqual({ householdId: 'h2', inviteCode: 'XYZ234' })
     expect(await b.rotateInvite()).toEqual({ householdId: 'h', inviteCode: 'NEWCODE234' })
@@ -66,6 +74,10 @@ describe('CloudBackend', () => {
 
     expect(calls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toEqual([
       'GET /me',
+      'GET /admin/requests',
+      'POST /admin/requests/Google_1%20x/approve',
+      'POST /admin/requests/Google_2/decline',
+      'POST /admin/requests/decline-pending',
       'POST /household',
       'POST /household/join',
       'POST /household/invite',
@@ -82,12 +94,13 @@ describe('CloudBackend', () => {
       'DELETE /list?checked=true',
     ])
     expect(calls.every((c) => c.headers.authorization === 'Bearer tok')).toBe(true)
-    expect(calls[2].body).toEqual({ code: 'xyz234' })
-    expect(calls[9].body).toEqual({ recipeIds: ['r1'], mode: 'append' })
-    expect(calls[11].body).toEqual({ checked: true })
-    expect(calls[0].headers['content-type']).toBeUndefined()
-    expect(calls[1].headers['content-type']).toBeUndefined() // POST /household has no body
-    expect(calls[2].headers['content-type']).toBe('application/json')
+    const body = (path: string) => calls.find((c) => `${c.method} ${c.url.pathname}${c.url.search}` === path)!
+    expect(body('POST /household/join').body).toEqual({ code: 'xyz234' })
+    expect(body('POST /list/generate').body).toEqual({ recipeIds: ['r1'], mode: 'append' })
+    expect(body('PATCH /list/items/i1').body).toEqual({ checked: true })
+    expect(body('GET /me').headers['content-type']).toBeUndefined()
+    expect(body('POST /household').headers['content-type']).toBeUndefined() // no body
+    expect(body('POST /household/join').headers['content-type']).toBe('application/json')
   })
 
   it('works whether or not the API URL ends with a slash', async () => {
@@ -137,6 +150,9 @@ describe('LocalBackend', () => {
     expect(b.mode).toBe('local')
     expect(await b.me()).toEqual({ householdId: 'local', inviteCode: null })
     expect(await b.createHousehold()).toEqual({ householdId: 'local', inviteCode: null })
+    expect(await b.listAccessRequests()).toEqual([])
+    expect(await b.decideAccess()).toBeUndefined()
+    expect(await b.declineAllPending()).toBe(0)
     await expect(b.joinHousehold()).rejects.toThrow('Sharing needs the cloud version')
     await expect(b.rotateInvite()).rejects.toThrow('Sharing needs the cloud version')
   })

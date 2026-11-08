@@ -10,7 +10,16 @@ from aws_cdk.assertions import Match, Template
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from stack import API_BURST_LIMIT, API_RATE_LIMIT, CertificateStack, GrubGrabStack, SiteDomain  # noqa: E402
+from stack import (  # noqa: E402
+    API_BURST_LIMIT,
+    API_MAX_CONCURRENCY,
+    API_RATE_LIMIT,
+    DB_MAX_READS_PER_SECOND,
+    DB_MAX_WRITES_PER_SECOND,
+    CertificateStack,
+    GrubGrabStack,
+    SiteDomain,
+)
 
 ENV = cdk.Environment(account="123456789012", region="eu-west-2")
 
@@ -229,7 +238,7 @@ def test_api_access_logs(template):
 
 def test_log_groups_have_retention(template):
     groups = template.find_resources("AWS::Logs::LogGroup")
-    assert len(groups) == 2
+    assert len(groups) == 3  # API access logs, API function, sign-up function
     assert all(g["Properties"]["RetentionInDays"] == 90 for g in groups.values())
 
 
@@ -341,3 +350,80 @@ def test_domain_and_certificate_go_together(domain_templates):
     app = cdk.App(context={"googleClientId": GOOGLE_ID})
     with pytest.raises(ValueError, match="needs its certificate"):
         GrubGrabStack(app, "NoCert", site_domain=DOMAIN, env=ENV)
+
+
+# ---- sign-up approval --------------------------------------------------------------------
+
+
+def functions(template: Template) -> dict[str, dict]:
+    """Our Lambda functions by handler (CDK adds helper functions of its own)."""
+    out = {}
+    for f in template.find_resources("AWS::Lambda::Function").values():
+        handler = f["Properties"].get("Handler", "")
+        if handler.startswith("grubgrab."):
+            out[handler] = f["Properties"]
+    return out
+
+
+def logical_id(template: Template, type_: str, handler: str | None = None) -> str:
+    for name, r in template.find_resources(type_).items():
+        if handler is None or r["Properties"].get("Handler") == handler:
+            return name
+    raise AssertionError(f"no {type_} {handler or ''}")
+
+
+def test_new_sign_ups_go_through_the_approval_trigger(template):
+    pool = only(template, "AWS::Cognito::UserPool")
+    signup = logical_id(template, "AWS::Lambda::Function", "grubgrab.signup.lambda_handler")
+    assert refs(pool["LambdaConfig"]["PreSignUp"]) == {signup}
+    group = only(template, "AWS::Cognito::UserPoolGroup")
+    assert group["GroupName"] == "admins"
+
+
+def test_admin_routes_exist_and_require_sign_in(template):
+    keys = {r["Properties"]["RouteKey"]: r["Properties"] for r in template.find_resources("AWS::ApiGatewayV2::Route").values()}
+    for key in [
+        "GET /admin/requests",
+        "POST /admin/requests/decline-pending",
+        "POST /admin/requests/{username}/approve",
+        "POST /admin/requests/{username}/decline",
+    ]:
+        assert keys[key]["AuthorizationType"] == "JWT"
+
+
+def test_spend_caps(template):
+    fns = functions(template)
+    assert fns["grubgrab.handler.lambda_handler"]["ReservedConcurrentExecutions"] == API_MAX_CONCURRENCY
+    assert fns["grubgrab.signup.lambda_handler"]["ReservedConcurrentExecutions"] == 2
+    assert fns["grubgrab.signup.lambda_handler"]["Timeout"] <= 5  # Cognito's limit for triggers
+    table = only(template, "AWS::DynamoDB::GlobalTable")
+    assert table["WriteOnDemandThroughputSettings"] == {"MaxWriteRequestUnits": DB_MAX_WRITES_PER_SECOND}
+    assert table["Replicas"][0]["ReadOnDemandThroughputSettings"] == {"MaxReadRequestUnits": DB_MAX_READS_PER_SECOND}
+
+
+def test_no_email_alerts_without_an_address(template):
+    assert template.find_resources("AWS::SNS::Topic") == {}
+    assert template.find_resources("AWS::Budgets::Budget") == {}
+    assert "TOPIC_ARN" not in json.dumps(functions(template)["grubgrab.signup.lambda_handler"])
+
+
+@pytest.mark.parametrize("budget, expected", [(None, 5), ("12.5", 12.5)])
+def test_email_alerts_for_sign_ups_and_the_monthly_bill(budget, expected):
+    context = {"notifyEmail": " me@example.com "}
+    if budget:
+        context["monthlyBudgetUsd"] = budget
+    t = synth(**context)
+    topic = logical_id(t, "AWS::SNS::Topic")
+    t.has_resource_properties("AWS::SNS::Subscription", {"Protocol": "email", "Endpoint": "me@example.com"})
+    signup = functions(t)["grubgrab.signup.lambda_handler"]
+    assert refs(signup["Environment"]["Variables"]["TOPIC_ARN"]) == {topic}
+    policy = json.dumps(t.find_resources("AWS::SNS::TopicPolicy"))
+    assert "aws:SecureTransport" in policy  # publishing only over TLS
+
+    budget_props = only(t, "AWS::Budgets::Budget")
+    assert budget_props["Budget"]["BudgetLimit"] == {"Amount": expected, "Unit": "USD"}
+    assert budget_props["Budget"]["TimeUnit"] == "MONTHLY"
+    alerts = {(n["Notification"]["NotificationType"], n["Notification"]["Threshold"]) for n in budget_props["NotificationsWithSubscribers"]}
+    assert alerts == {("ACTUAL", 80), ("FORECASTED", 100)}
+    assert all(n["Subscribers"] == [{"Address": "me@example.com", "SubscriptionType": "EMAIL"}] for n in budget_props["NotificationsWithSubscribers"])
+    test_no_dependency_cycles(t)

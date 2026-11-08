@@ -14,6 +14,16 @@ interface Tokens {
 
 const redirectUri = () => `${window.location.origin}/`
 
+/** Not a failure: something to tell the person on the sign-in screen (e.g. their request is waiting). */
+export class SignInNotice extends Error {}
+
+// Codes raised by the sign-up approval trigger (api/src/grubgrab/signup.py). Cognito passes them back as
+// "?error=...&error_description=PreSignUp failed with error ACCESS_PENDING."
+const SIGN_UP_NOTICES: Record<string, string> = {
+  ACCESS_PENDING: "Thanks! Your request to join has been sent. You'll be able to sign in once it's approved.",
+  ACCESS_DECLINED: "This Google account hasn't been approved for Grub Grab.",
+}
+
 function b64url(bytes: ArrayBuffer | Uint8Array): string {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
   return btoa(String.fromCharCode(...arr)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
@@ -64,8 +74,18 @@ export async function signIn(cfg: AppConfig) {
   window.location.assign(url.toString())
 }
 
-export function signOut(cfg: AppConfig) {
+export async function signOut(cfg: AppConfig) {
+  const refreshToken = readTokens()?.refreshToken
   localStorage.removeItem(TOKENS_KEY)
+  if (refreshToken) {
+    // End the session on the server too, so a copied refresh token stops working. Best effort: if this
+    // fails (offline), signing out of this phone still happens.
+    await fetch(`${cfg.cognitoDomain}/oauth2/revoke`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: refreshToken, client_id: cfg.clientId }),
+    }).catch(() => {})
+  }
   const url = new URL(`${cfg.cognitoDomain}/logout`)
   url.search = new URLSearchParams({ client_id: cfg.clientId, logout_uri: redirectUri() }).toString()
   window.location.assign(url.toString())
@@ -74,6 +94,14 @@ export function signOut(cfg: AppConfig) {
 /** Call once on startup: finishes a redirect back from the Hosted UI if there is one. */
 export async function completeSignIn(cfg: AppConfig): Promise<void> {
   const params = new URLSearchParams(window.location.search)
+  const error = params.get('error')
+  if (error) {
+    window.history.replaceState({}, '', '/')
+    const description = params.get('error_description') ?? ''
+    const notice = SIGN_UP_NOTICES[description.match(/\bACCESS_[A-Z]+\b/)?.[0] ?? '']
+    if (notice) throw new SignInNotice(notice)
+    throw new Error(`Sign-in failed: ${description || error}`)
+  }
   const code = params.get('code')
   if (!code) return
   const verifier = sessionStorage.getItem(VERIFIER_KEY) ?? ''

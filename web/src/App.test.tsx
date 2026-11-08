@@ -182,6 +182,8 @@ describe('cloud mode', () => {
       const { calls } = fakeApi()
       const user = await renderApp()
       await user.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+      // Sign-in hashes the PKCE verifier asynchronously before redirecting.
+      await waitFor(() => expect(window.location.assign).toHaveBeenCalled())
       const url = new URL((window.location.assign as unknown as { mock: { calls: string[][] } }).mock.calls[0][0])
       expect(url.origin + url.pathname).toBe('https://auth.example.com/oauth2/authorize')
       expect(url.searchParams.get('identity_provider')).toBe('Google')
@@ -200,6 +202,14 @@ describe('cloud mode', () => {
       )
       await renderApp()
       expect(await screen.findByText('Pasta')).toBeInTheDocument()
+    })
+
+    it('tells someone their sign-up request is waiting for approval', async () => {
+      fakeLocation('http://localhost/?error_description=PreSignUp+failed+with+error+ACCESS_PENDING.+&error=invalid_request')
+      fakeApi()
+      await renderApp()
+      expect(await screen.findByText(/Your request to join has been sent/)).toHaveClass('notice')
+      expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
     })
 
     it('shows why sign-in failed', async () => {
@@ -314,6 +324,44 @@ describe('cloud mode', () => {
         fireEvent.touchEnd(window, { touches: [] })
       })
       expect(await screen.findByText('Added on the other phone')).toBeInTheDocument()
+    })
+
+    describe('sign-up approval (admins)', () => {
+      const ADMIN = { householdId: 'h1', inviteCode: 'ABCDEFGH23', admin: true, pendingRequests: 2 }
+      const WAITING = [
+        { username: 'Google_1', email: 'anna@example.com', name: 'Anna', requestedAt: 1_794_130_000 },
+        { username: 'Google_2', email: 'bot@spam.example', name: '', requestedAt: 1_794_131_000 },
+      ]
+
+      it('shows the count on the Settings tab and lets the admin approve people', async () => {
+        const { calls } = fakeApi({ household: ADMIN, requests: WAITING })
+        const user = await renderApp()
+        expect(await screen.findByText('No recipes yet.')).toBeInTheDocument()
+        expect(tab(/Settings/)).toHaveTextContent('Settings (2)')
+        await user.click(tab(/Settings/))
+        await user.click(await screen.findByRole('button', { name: 'Approve Anna' }))
+        expect(calls.some((c) => c.method === 'POST' && c.url.pathname === '/admin/requests/Google_1/approve')).toBe(true)
+        expect(tab(/Settings/)).toHaveTextContent('Settings (1)')
+        await user.click(screen.getByRole('button', { name: 'Decline bot@spam.example' }))
+        expect(tab(/Settings/)).toHaveTextContent(/^⚙️Settings$/)
+      })
+
+      it('admins can decline everyone at once', async () => {
+        vi.spyOn(window, 'confirm').mockReturnValue(true)
+        fakeApi({ household: ADMIN, requests: WAITING })
+        const user = await renderApp()
+        await user.click(await screen.findByRole('button', { name: /Settings/ }))
+        await user.click(await screen.findByRole('button', { name: 'Decline all' }))
+        expect(await screen.findByText(/No one is waiting/)).toBeInTheDocument()
+      })
+
+      it('is not shown to anyone else', async () => {
+        const { calls } = fakeApi({ requests: WAITING })
+        const user = await renderApp()
+        await user.click(await screen.findByRole('button', { name: /Settings/ }))
+        expect(screen.queryByText('Sign-up requests')).not.toBeInTheDocument()
+        expect(calls.some((c) => c.url.pathname.startsWith('/admin'))).toBe(false)
+      })
     })
 
     it('shows the app with an error banner if the account cannot be loaded', async () => {

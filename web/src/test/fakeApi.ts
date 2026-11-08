@@ -1,6 +1,6 @@
 // An in-memory stand-in for the Grub Grab HTTP API (the network boundary), plus Cognito's token endpoint.
 import { aggregate } from '../lib/aggregate'
-import type { ListItem, Recipe } from '../types'
+import type { AccessRequest, ListItem, Recipe } from '../types'
 import { CFG, fakeFetch, json, type Handler } from './fakes'
 
 const API = CFG.apiUrl.replace(/\/$/, '')
@@ -8,7 +8,8 @@ const API = CFG.apiUrl.replace(/\/$/, '')
 export interface ApiState {
   recipes: Recipe[]
   items: ListItem[]
-  household: { householdId: string | null; inviteCode: string | null }
+  household: { householdId: string | null; inviteCode: string | null; admin?: boolean; pendingRequests?: number }
+  requests: AccessRequest[]
 }
 
 let n = 0
@@ -21,6 +22,7 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
     recipes: [],
     items: [],
     household: { householdId: 'h1', inviteCode: 'ABCDEFGH23' },
+    requests: [],
     ...initial,
   }
   const itemId = (url: URL) => url.pathname.split('/').pop()!
@@ -44,6 +46,13 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
       state.household = { ...state.household, inviteCode: 'ROTATED234' }
       return json(state.household)
     },
+    [`GET ${API}/admin/requests`]: () => json(state.requests),
+    [`POST ${API}/admin/requests/decline-pending`]: () => {
+      const declined = state.requests.length
+      state.requests = []
+      return json({ declined })
+    },
+    [`POST ${CFG.cognitoDomain}/oauth2/revoke`]: () => new Response(null, { status: 200 }),
     [`GET ${API}/recipes`]: needsHousehold(() => json(state.recipes)),
     [`GET ${API}/list`]: needsHousehold(() => json(state.items)),
     [`POST ${API}/list/generate`]: (_u, init) => {
@@ -68,6 +77,12 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
     new Proxy(routes, {
       get(target, key: string) {
         if (key in target) return target[key]
+        const decision = key.match(/^POST .+\/admin\/requests\/([^/]+)\/(approve|decline)$/)
+        if (decision)
+          return () => {
+            state.requests = state.requests.filter((r) => r.username !== decodeURIComponent(decision[1]))
+            return json({ username: decision[1], status: decision[2] === 'approve' ? 'approved' : 'declined' })
+          }
         const m = key.match(/^(PATCH|DELETE|PUT) (.+)\/(list\/items|recipes)\/[^/]+$/)
         if (!m) return undefined
         const override = target[`${m[1]} ${m[2]}/${m[3]}/:id`]

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { AccessRequests } from './components/AccessRequests'
 import { HouseholdSetup } from './components/HouseholdSetup'
 import { PullToRefresh } from './components/PullToRefresh'
 import { ListView } from './components/ListView'
@@ -6,7 +7,7 @@ import { RecipeEditor } from './components/RecipeEditor'
 import { RecipesView } from './components/RecipesView'
 import { SettingsView } from './components/SettingsView'
 import { updateApp, watchForAppUpdates } from './lib/appUpdate'
-import { completeSignIn, currentEmail, getAccessToken, signIn, signOut } from './lib/auth'
+import { completeSignIn, currentEmail, getAccessToken, SignInNotice, signIn, signOut } from './lib/auth'
 import { AuthRequiredError, CloudBackend, LocalBackend } from './lib/backend'
 import { loadConfig, type AppConfig } from './lib/config'
 import type { Backend, Household, ListItem, Recipe } from './types'
@@ -29,6 +30,7 @@ export default function App() {
   const [household, setHousehold] = useState<Household | null>(null)
   const [editing, setEditing] = useState<Recipe | null | 'new'>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   // ---- startup -------------------------------------------------------------
   useEffect(() => {
@@ -39,7 +41,8 @@ export default function App() {
       try {
         await completeSignIn(cfg)
       } catch (e) {
-        setError((e as Error).message)
+        if (e instanceof SignInNotice) setNotice(e.message)
+        else setError((e as Error).message)
       }
       if (!(await getAccessToken(cfg))) return setBoot({ state: 'signin', cfg })
       setBoot({ state: 'ready', backend: new CloudBackend(cfg), cfg })
@@ -81,6 +84,11 @@ export default function App() {
     refresh()
   }, [refresh])
 
+  // Admin panel: stable callbacks so it loads once per visit to Settings.
+  const loadRequests = useCallback(() => backend!.listAccessRequests(), [backend])
+  // The panel only shows once the household has loaded, so it's always set here.
+  const setPendingCount = useCallback((pendingRequests: number) => setHousehold((h) => ({ ...h!, pendingRequests })), [])
+
   /** Pull-to-refresh: switch to a newly deployed version if there is one, otherwise reload the data. */
   const pullRefresh = useCallback(async () => {
     if (await updateApp()) return
@@ -110,6 +118,7 @@ export default function App() {
         <img src="/icon.svg" alt="" width={96} height={96} />
         <h1>Grub Grab</h1>
         <p className="muted">Recipes in, shopping list out.</p>
+        {notice && <p className="notice">{notice}</p>}
         {error && <p className="error">{error}</p>}
         <button className="btn google" onClick={() => signIn(boot.cfg)}>
           Continue with Google
@@ -129,7 +138,7 @@ export default function App() {
         <main>
           <HouseholdSetup
             email={currentEmail()}
-            onSignOut={() => signOut(cfg!)} // only cloud users lack a household, and cloud mode always has cfg
+            onSignOut={() => void signOut(cfg!)} // only cloud users lack a household, and cloud mode always has cfg
             onStart={async () => {
               setHousehold(await b.createHousehold())
               await refresh()
@@ -221,7 +230,12 @@ export default function App() {
             mode={b.mode}
             household={household}
             email={currentEmail()}
-            onSignOut={() => signOut(cfg!)} // the button only exists in cloud mode, where cfg is set
+            onSignOut={() => void signOut(cfg!)} // the button only exists in cloud mode, where cfg is set
+            adminPanel={
+              household?.admin && (
+                <AccessRequests load={loadRequests} decide={b.decideAccess} declineAll={b.declineAllPending} onCount={setPendingCount} />
+              )
+            }
             onRotate={async () => setHousehold(await b.rotateInvite())}
             onJoin={async (code) => {
               setHousehold(await b.joinHousehold(code))
@@ -239,7 +253,7 @@ export default function App() {
           <span aria-hidden>🛒</span>List{toBuy ? ` (${toBuy})` : ''}
         </button>
         <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
-          <span aria-hidden>⚙️</span>Settings
+          <span aria-hidden>⚙️</span>Settings{household?.pendingRequests ? ` (${household.pendingRequests})` : ''}
         </button>
       </nav>
     </div>

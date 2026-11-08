@@ -88,7 +88,20 @@ Pull down from the top of any screen to refresh: it loads the other person's cha
 
 On first sign-in, the app asks whether to **join a household** with a code or **start a new one**. For two people, the first person starts one and opens **Settings**, which shows a 10-character invite code (e.g. `ABCDE-FGH23`). The second person signs in with their own Google account and enters that code on the welcome screen. Anyone can also switch household later under *Settings → Join a household*. Each account gets 5 join attempts per hour. **New code** in Settings replaces the code if it has leaked; people who already joined stay in.
 
-**Cost:** at household scale this is effectively free. Everything is pay-per-request, and the Cognito, Lambda and DynamoDB free tiers cover it.
+**Cost:** at household scale this is effectively free. Everything is pay-per-request, and the Cognito, Lambda and DynamoDB free tiers cover it. Hard caps keep the worst case to a few dollars a day even if an approved account is abused: the database is capped at 100 writes and 300 reads per second, at most 5 copies of the API run at once, and each household can hold up to 500 recipes and 500 list items.
+
+### Sign-up approval and alerts
+
+New people can't just sign in: their first Google sign-in becomes a **request**, and nothing is created for them until an admin approves it. They see *"Your request to join has been sent"*; the admin sees it under **Settings → Sign-up requests** (with a count on the Settings tab) and approves or declines it. Once approved, they sign in again and join a household with an invite code. Unapproved people never get an account or a token, so they can't reach the API at all.
+
+After the first deploy, make yourself an admin (find your username with `aws cognito-idp list-users`; the pool id is the `UserPoolId` output), then sign out and back in so your session picks it up:
+
+```bash
+aws cognito-idp admin-add-user-to-group --region eu-west-2 \
+  --user-pool-id <UserPoolId> --username <your username, e.g. google_1234…> --group-name admins
+```
+
+Set `notifyEmail` in `infra/settings.local.json` to be emailed when someone asks to join (at most one email an hour, however many ask) and when AWS spend passes 80% of `monthlyBudgetUsd` (default $5) or is forecast to exceed it. AWS emails you once to confirm the subscription; click the link. The budget covers your whole AWS account.
 
 **Region:** the app deploys to `eu-west-2` (London) whatever your AWS CLI's default region is. To use another region, set `"region"` in `infra/settings.local.json` (or pass `-c region=...`), and create the Google client secret and the OAuth URLs in that region too.
 
@@ -100,6 +113,9 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 |---|---|---|
 | GET | `/me` | household id + invite code, or both `null` for a new user who hasn't started or joined one |
 | POST | `/household` | start a household (returns the existing one if the user already has one) |
+| GET | `/admin/requests` | admins only: pending sign-up requests |
+| POST | `/admin/requests/{username}/approve` · `/decline` | admins only |
+| POST | `/admin/requests/decline-pending` | admins only: decline everyone waiting |
 | POST | `/household/join` | `{code}`, max 5 attempts per user per hour (429 after that) |
 | POST | `/household/invite` | replace the invite code; the old one stops working |
 | GET / POST | `/recipes` | list / create. A recipe is `{title, servings, notes, link, tags, ingredients}`; `link` must be an http(s) address; tags are lower-cased and de-duplicated, max 20 of 30 characters |
@@ -118,7 +134,8 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 - The API is throttled to 10 requests/second (bursts of 20) to cap cost if an account is abused.
 - CloudFront sends a strict Content-Security-Policy (no inline scripts, `frame-ancestors 'none'`), HSTS, `X-Frame-Options: DENY`, `nosniff` and a referrer policy.
 - Sign-in is Google only: no passwords are stored, and self-service email sign-up is switched off. The Google client secret is read from Secrets Manager at deploy time.
-- Tokens can be revoked. Note that **any** Google account can sign in and get its own empty household; only someone with your invite code can see your data.
+- New accounts need an admin's approval (see *Sign-up approval*); until then a sign-in is refused before any account or token exists. Signing out revokes the session on the server, so a copied refresh token stops working.
+- Spend caps (database throughput, function concurrency, per-household limits) bound what even an approved account can cost, and the monthly budget alert flags anything unusual. A list request that would exceed the limit is refused before anything is written.
 - API access logs (no request bodies or tokens) and Lambda logs are kept for 90 days.
 - `infra/tests` asserts all of the above against the synthesised template.
 

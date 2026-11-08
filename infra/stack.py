@@ -5,6 +5,7 @@ from aws_cdk import CfnOutput, Duration, RemovalPolicy, SecretValue, Stack
 from aws_cdk import aws_apigatewayv2 as apigw
 from aws_cdk import aws_apigatewayv2_authorizers as authorizers
 from aws_cdk import aws_apigatewayv2_integrations as integrations
+from aws_cdk import aws_budgets as budgets
 from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
@@ -16,6 +17,8 @@ from aws_cdk import aws_route53 as route53
 from aws_cdk import aws_route53_targets as targets
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as subscriptions
 from constructs import Construct
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +29,15 @@ LOCAL_DEV_URL = "http://localhost:5173/"
 API_RATE_LIMIT = 10  # steady requests per second
 API_BURST_LIMIT = 20
 LOG_RETENTION = logs.RetentionDays.THREE_MONTHS
+
+# Spend caps. Even an approved account that's been taken over can't run up more than a few dollars a day:
+# the database refuses work beyond these rates, and at most this many copies of the API run at once.
+DB_MAX_WRITES_PER_SECOND = 100
+DB_MAX_READS_PER_SECOND = 300
+API_MAX_CONCURRENCY = 5
+SIGNUP_MAX_CONCURRENCY = 2
+DEFAULT_MONTHLY_BUDGET_USD = 5
+ADMIN_GROUP = "admins"  # must match api/src/grubgrab/handler.py
 
 # Google sign-in. The client ID goes in settings.local.json (git-ignored) or `-c googleClientId=...`.
 # The client secret lives in Secrets Manager, never in the repo.
@@ -99,7 +111,9 @@ class GrubGrabStack(Stack):
             "Table",
             partition_key=dynamodb.Attribute(name="PK", type=dynamodb.AttributeType.STRING),
             sort_key=dynamodb.Attribute(name="SK", type=dynamodb.AttributeType.STRING),
-            billing=dynamodb.Billing.on_demand(),
+            billing=dynamodb.Billing.on_demand(
+                max_read_request_units=DB_MAX_READS_PER_SECOND, max_write_request_units=DB_MAX_WRITES_PER_SECOND
+            ),
             time_to_live_attribute="expiresAt",  # clears old join-attempt counters
             point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
                 point_in_time_recovery_enabled=True
@@ -137,15 +151,72 @@ class GrubGrabStack(Stack):
         )
 
         # ---- API ------------------------------------------------------------------
+        # ---- sign-up approval ---------------------------------------------------------
+        # New people's first Google sign-in is held until an admin approves it (see api/src/grubgrab/signup.py).
+        notify_email = (self.node.try_get_context("notifyEmail") or "").strip()
+        code = lambda_.Code.from_asset(str(ROOT / "api" / "src"))
+        signup_fn = lambda_.Function(
+            self,
+            "SignupFn",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            architecture=lambda_.Architecture.ARM_64,
+            handler="grubgrab.signup.lambda_handler",
+            code=code,
+            memory_size=128,
+            timeout=Duration.seconds(5),  # Cognito gives triggers 5 seconds
+            reserved_concurrent_executions=SIGNUP_MAX_CONCURRENCY,
+            environment={"TABLE_NAME": table.table_name},
+            log_group=logs.LogGroup(self, "SignupFnLogs", retention=LOG_RETENTION, removal_policy=RemovalPolicy.DESTROY),
+        )
+        table.grant_read_write_data(signup_fn)
+        user_pool.add_trigger(cognito.UserPoolOperation.PRE_SIGN_UP, signup_fn)
+        cognito.CfnUserPoolGroup(
+            self,
+            "Admins",
+            user_pool_id=user_pool.user_pool_id,
+            group_name=ADMIN_GROUP,
+            description="Can approve or decline sign-up requests",
+        )
+
+        # ---- alerts: new sign-up requests and the monthly bill -------------------------
+        if notify_email:
+            topic = sns.Topic(self, "Notifications", display_name="Grub Grab", enforce_ssl=True)
+            topic.add_subscription(subscriptions.EmailSubscription(notify_email))
+            topic.grant_publish(signup_fn)
+            signup_fn.add_environment("TOPIC_ARN", topic.topic_arn)
+            budget_usd = float(self.node.try_get_context("monthlyBudgetUsd") or DEFAULT_MONTHLY_BUDGET_USD)
+
+            def alert(kind: str, percent: int):
+                return budgets.CfnBudget.NotificationWithSubscribersProperty(
+                    notification=budgets.CfnBudget.NotificationProperty(
+                        comparison_operator="GREATER_THAN", notification_type=kind, threshold=percent, threshold_type="PERCENTAGE"
+                    ),
+                    subscribers=[budgets.CfnBudget.SubscriberProperty(address=notify_email, subscription_type="EMAIL")],
+                )
+
+            budgets.CfnBudget(
+                self,
+                "MonthlyBudget",
+                budget=budgets.CfnBudget.BudgetDataProperty(
+                    budget_name="grubgrab-monthly",
+                    budget_type="COST",
+                    time_unit="MONTHLY",
+                    budget_limit=budgets.CfnBudget.SpendProperty(amount=budget_usd, unit="USD"),
+                ),
+                # Email when actual spend passes 80%, or AWS forecasts the month will go over.
+                notifications_with_subscribers=[alert("ACTUAL", 80), alert("FORECASTED", 100)],
+            )
+
         fn = lambda_.Function(
             self,
             "ApiFn",
             runtime=lambda_.Runtime.PYTHON_3_13,
             architecture=lambda_.Architecture.ARM_64,
             handler="grubgrab.handler.lambda_handler",
-            code=lambda_.Code.from_asset(str(ROOT / "api" / "src")),
+            code=code,
             memory_size=256,
-            timeout=Duration.seconds(10),
+            timeout=Duration.seconds(25),  # building a long list can be slowed by the database cap
+            reserved_concurrent_executions=API_MAX_CONCURRENCY,
             environment={"TABLE_NAME": table.table_name},
             log_group=logs.LogGroup(self, "ApiFnLogs", retention=LOG_RETENTION, removal_policy=RemovalPolicy.DESTROY),
         )
@@ -293,6 +364,10 @@ class GrubGrabStack(Stack):
             "/list/generate": [apigw.HttpMethod.POST],
             "/list/items": [apigw.HttpMethod.POST],
             "/list/items/{id}": [apigw.HttpMethod.PATCH, apigw.HttpMethod.DELETE],
+            "/admin/requests": [apigw.HttpMethod.GET],
+            "/admin/requests/decline-pending": [apigw.HttpMethod.POST],
+            "/admin/requests/{username}/approve": [apigw.HttpMethod.POST],
+            "/admin/requests/{username}/decline": [apigw.HttpMethod.POST],
         }
         for path, methods in routes.items():
             api.add_routes(path=path, methods=methods, integration=integration, authorizer=authorizer)
@@ -321,6 +396,7 @@ class GrubGrabStack(Stack):
         CfnOutput(self, "ApiUrl", value=api.api_endpoint)
         CfnOutput(self, "CognitoDomain", value=domain.base_url())
         CfnOutput(self, "ClientId", value=client.user_pool_client_id)
+        CfnOutput(self, "UserPoolId", value=user_pool.user_pool_id, description="For adding yourself to the admins group")
         CfnOutput(
             self,
             "GoogleRedirectUri",

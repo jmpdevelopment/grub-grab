@@ -2,5 +2,7 @@
   "googleClientId": "123456789012-abc123.apps.googleusercontent.com",
   "domainName": "",
   "hostedZoneId": "",
-  "region": "eu-west-2"
+  "region": "eu-west-2",
+  "notifyEmail": "you@example.com",
+  "monthlyBudgetUsd": 5
 }

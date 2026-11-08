@@ -31,6 +31,17 @@ export interface Household {
   /** null until the user starts a household or joins one (cloud mode, first sign-in). */
   householdId: string | null
   inviteCode: string | null
+  /** Admins approve sign-up requests; only present for them. */
+  admin?: boolean
+  pendingRequests?: number
+}
+
+/** Someone who signed in with Google and is waiting for an admin to let them in. */
+export interface AccessRequest {
+  username: string
+  email: string
+  name: string
+  requestedAt: number // seconds since 1970
 }
 
 export interface Backend {
@@ -39,6 +50,9 @@ export interface Backend {
   createHousehold(): Promise<Household>
   joinHousehold(code: string): Promise<Household>
   rotateInvite(): Promise<Household>
+  listAccessRequests(): Promise<AccessRequest[]>
+  decideAccess(username: string, approve: boolean): Promise<void>
+  declineAllPending(): Promise<number>
   listRecipes(): Promise<Recipe[]>
   createRecipe(r: RecipeInput): Promise<Recipe>
   updateRecipe(id: string, r: RecipeInput): Promise<Recipe>

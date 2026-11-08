@@ -7,6 +7,8 @@ Key layout:
   PK=HH#<id>           SK=META             -> inviteCode, createdAt
   PK=HH#<id>           SK=RECIPE#<id>      -> title, servings, ingredients, notes
   PK=HH#<id>           SK=ITEM#<id>        -> name, quantity, unit, checked, recipes
+  PK=ACCESS            SK=REQ#<username>   -> email, name, status (pending/approved/declined), requestedAt
+  PK=ACCESS            SK=NOTIFY           -> lastAt — at most one "new request" email per hour
 """
 
 from __future__ import annotations
@@ -26,6 +28,10 @@ INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
 INVITE_LENGTH = 10  # 32^10 ≈ 1.1e15 codes (50 bits)
 JOIN_WINDOW_SECONDS = 3600
 _INVITE_ATTEMPTS = 5
+PENDING_REQUEST_TTL = 30 * 24 * 3600  # unanswered sign-up requests disappear after a month
+DECLINED_REQUEST_TTL = 365 * 24 * 3600  # a decline sticks for a year
+NOTIFY_EVERY_SECONDS = 3600
+_ACCESS = "ACCESS"
 
 
 def _strip_keys(item: dict) -> dict:
@@ -145,16 +151,85 @@ class Store:
 
     # ---- generic helpers ---------------------------------------------------
 
-    def _query_prefix(self, household_id: str, prefix: str) -> list[dict]:
-        items, kwargs = [], {
-            "KeyConditionExpression": Key("PK").eq(f"HH#{household_id}") & Key("SK").begins_with(prefix)
-        }
+    def _query(self, pk: str, prefix: str, **extra) -> list[dict]:
+        items, kwargs = [], {"KeyConditionExpression": Key("PK").eq(pk) & Key("SK").begins_with(prefix), **extra}
         while True:
             resp = self.table.query(**kwargs)
             items.extend(resp.get("Items", []))
             if "LastEvaluatedKey" not in resp:
                 return items
             kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+    def _query_prefix(self, household_id: str, prefix: str) -> list[dict]:
+        return self._query(f"HH#{household_id}", prefix)
+
+    def count_recipes(self, household_id: str) -> int:
+        return len(self._query_prefix(household_id, "RECIPE#"))
+
+    def count_items(self, household_id: str) -> int:
+        return len(self._query_prefix(household_id, "ITEM#"))
+
+    # ---- sign-up approval ---------------------------------------------------
+
+    def request_access(self, username: str, email: str, name: str) -> tuple[str, bool]:
+        """Record a sign-up request (first time only). Returns (status, newly_created)."""
+        key = {"PK": _ACCESS, "SK": f"REQ#{username}"}
+        existing = self.table.get_item(Key=key, ConsistentRead=True).get("Item")
+        if existing:
+            return existing["status"], False
+        now = self._now()
+        item = {**key, "username": username, "email": email[:200], "name": name[:200], "status": "pending",
+                "requestedAt": now, "expiresAt": now + PENDING_REQUEST_TTL}
+        if self._put_if_absent(item):
+            return "pending", True
+        return self.request_access(username, email, name)  # a parallel attempt created it first
+
+    def access_requests(self) -> list[dict]:
+        """Pending sign-up requests, newest first."""
+        items = self._query(_ACCESS, "REQ#")
+        pending = [i for i in items if i.get("status") == "pending"]
+        keep = ("username", "email", "name", "requestedAt")
+        return sorted(({k: i.get(k) for k in keep} for i in pending), key=lambda r: -r["requestedAt"])
+
+    def decide_access(self, username: str, approve: bool) -> dict | None:
+        """Approve or decline a request. None if there is no such request."""
+        update = "SET #s = :s REMOVE expiresAt" if approve else "SET #s = :s, expiresAt = :exp"
+        values = {":s": "approved" if approve else "declined"}
+        if not approve:
+            values[":exp"] = self._now() + DECLINED_REQUEST_TTL
+        try:
+            resp = self.table.update_item(
+                Key={"PK": _ACCESS, "SK": f"REQ#{username}"},
+                UpdateExpression=update,
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues=values,
+                ReturnValues="ALL_NEW",
+            )
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            return None
+        item = resp["Attributes"]
+        return {k: item.get(k) for k in ("username", "email", "name", "status")}
+
+    def decline_all_pending(self) -> int:
+        pending = self.access_requests()
+        for r in pending:
+            self.decide_access(r["username"], approve=False)
+        return len(pending)
+
+    def claim_notification(self) -> bool:
+        """True at most once per NOTIFY_EVERY_SECONDS, so a flood of requests can't flood your inbox."""
+        now = self._now()
+        try:
+            self.table.update_item(
+                Key={"PK": _ACCESS, "SK": "NOTIFY"},
+                UpdateExpression="SET lastAt = :now",
+                ConditionExpression="attribute_not_exists(lastAt) OR lastAt < :cutoff",
+                ExpressionAttributeValues={":now": now, ":cutoff": now - NOTIFY_EVERY_SECONDS},
+            )
+            return True
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
 
     # ---- recipes ------------------------------------------------------------
 
@@ -222,6 +297,26 @@ class Store:
 
     def delete_item(self, household_id: str, item_id: str) -> None:
         self.table.delete_item(Key={"PK": f"HH#{household_id}", "SK": f"ITEM#{item_id}"})
+
+    def replace_items(self, household_id: str, remove_ids: list[str], new_items: list[dict]) -> None:
+        """Delete some items and add others in batches (fewer round trips when building a list)."""
+        with self.table.batch_writer() as batch:
+            for item_id in remove_ids:
+                batch.delete_item(Key={"PK": f"HH#{household_id}", "SK": f"ITEM#{item_id}"})
+            for i in new_items:
+                item_id = uuid.uuid4().hex
+                batch.put_item(
+                    Item={
+                        "PK": f"HH#{household_id}",
+                        "SK": f"ITEM#{item_id}",
+                        "id": item_id,
+                        "name": i["name"],
+                        "quantity": i["quantity"],
+                        "unit": i["unit"] or "",
+                        "checked": False,
+                        "recipes": i["recipes"] or [],
+                    }
+                )
 
     def clear_items(self, household_id: str, only_checked: bool = False) -> None:
         with self.table.batch_writer() as batch:
