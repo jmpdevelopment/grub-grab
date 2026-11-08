@@ -52,28 +52,40 @@ class TestInviteCodes:
 
     def test_codes_are_unique_per_household(self, table):
         s = Store(table, codes("AAAAAA", "AAAAAA", "BBBBBB"))
-        first = s.get_or_create_household("alice")
-        second = s.get_or_create_household("bob")
+        first = s.create_household("alice")
+        second = s.create_household("bob")
         assert (first["inviteCode"], second["inviteCode"]) == ("AAAAAA", "BBBBBB")
         assert s.join_household("carol", "AAAAAA")["householdId"] == first["householdId"]
 
     def test_gives_up_after_repeated_collisions(self, table):
         s = Store(table, lambda: "AAAAAA")
-        s.get_or_create_household("alice")
+        s.create_household("alice")
         with pytest.raises(RuntimeError, match="unique invite code"):
-            s.get_or_create_household("bob")
+            s.create_household("bob")
 
 
 class TestHouseholds:
-    def test_created_once_then_reused(self, store):
-        first = store.get_or_create_household("alice")
-        assert store.get_or_create_household("alice") == first
+    def test_new_user_has_no_household_until_they_start_one(self, store):
+        assert store.find_household("alice") is None
+        assert store.household_for("alice") is None
+        first = store.create_household("alice")
+        assert store.find_household("alice") == first
         assert store.household_for("alice") == first["householdId"]
+
+    def test_starting_twice_keeps_the_first_household(self, store):
+        first = store.create_household("alice")
+        assert store.create_household("alice") == first
+        assert [i["PK"] for i in store.table.scan()["Items"] if i["SK"] == "META"] == [f"HH#{first['householdId']}"]
+
+    def test_join_without_a_household_of_your_own(self, store):
+        hh = store.create_household("alice")
+        assert store.join_household("bob", hh["inviteCode"]) == hh
+        assert store.find_household("bob") == hh
 
     def test_parallel_first_request_uses_existing_household(self, table):
         Store(table).table.put_item(Item={"PK": "HH#theirs", "SK": "META", "inviteCode": "ZZZZZZ"})
         s = Store(LateProfileTable(table, "theirs"), codes("LOSERCODE2"))
-        assert s.get_or_create_household("alice") == {"householdId": "theirs", "inviteCode": "ZZZZZZ"}
+        assert s.create_household("alice") == {"householdId": "theirs", "inviteCode": "ZZZZZZ"}
         # The losing request cleans up the household it built: no orphan META, and its code doesn't work.
         metas = [i for i in table.scan()["Items"] if i["SK"] == "META"]
         assert [m["PK"] for m in metas] == ["HH#theirs"]
@@ -91,20 +103,20 @@ class TestHouseholds:
             def put_item(self, **kwargs):
                 result = table.put_item(**kwargs)
                 if kwargs["Item"]["SK"] == "PROFILE":  # a parallel request reads right after the profile lands
-                    seen.append(Store(table).get_or_create_household("alice"))
+                    seen.append(Store(table).create_household("alice"))
                 return result
 
             def __getattr__(self, name):
                 return getattr(table, name)
 
-        created = Store(WatchProfileWrites(), codes("FRESHCODE2")).get_or_create_household("alice")
+        created = Store(WatchProfileWrites(), codes("FRESHCODE2")).create_household("alice")
         assert seen == [created] and created["inviteCode"] == "FRESHCODE2"
 
     def test_household_without_meta(self, store):
         assert store.get_household("missing") == {"householdId": "missing", "inviteCode": None}
 
     def test_join(self, store):
-        hh = store.get_or_create_household("alice")
+        hh = store.create_household("alice")
         assert store.join_household("bob", hh["inviteCode"]) == hh
         assert store.household_for("bob") == hh["householdId"]
 
@@ -122,7 +134,7 @@ class TestHouseholds:
 class TestRotateInvite:
     def test_new_code_works_and_old_one_stops(self, table):
         s = Store(table, codes("OLDOLDOLD2", "NEWNEWNEW2"))
-        hh = s.get_or_create_household("alice")
+        hh = s.create_household("alice")
         rotated = s.rotate_invite(hh["householdId"])
         assert rotated == {"householdId": hh["householdId"], "inviteCode": "NEWNEWNEW2"}
         assert s.get_household(hh["householdId"])["inviteCode"] == "NEWNEWNEW2"

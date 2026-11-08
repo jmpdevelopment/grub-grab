@@ -24,13 +24,15 @@ export interface ListItem {
 }
 
 export interface Household {
-  householdId: string
+  /** null until the user starts a household or joins one (cloud mode, first sign-in). */
+  householdId: string | null
   inviteCode: string | null
 }
 
 export interface Backend {
   readonly mode: 'local' | 'cloud'
   me(): Promise<Household>
+  createHousehold(): Promise<Household>
   joinHousehold(code: string): Promise<Household>
   rotateInvite(): Promise<Household>
   listRecipes(): Promise<Recipe[]>

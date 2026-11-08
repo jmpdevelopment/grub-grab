@@ -179,7 +179,10 @@ def route(event: dict, store: Store) -> dict:
     params = event.get("pathParameters") or {}
 
     if route_key == "GET /me":
-        return _resp(200, store.get_or_create_household(sub))
+        # New users have no household until they start one or join one (the app asks on first sign-in).
+        return _resp(200, store.find_household(sub) or {"householdId": None, "inviteCode": None})
+    if route_key == "POST /household":
+        return _resp(200, store.create_household(sub))
     if route_key == "POST /household/join":
         # Count every attempt before looking anything up, so codes can't be brute-forced.
         if store.record_join_attempt(sub) > MAX_JOIN_ATTEMPTS_PER_HOUR:
@@ -188,10 +191,13 @@ def route(event: dict, store: Store) -> dict:
         if len(code) != INVITE_LENGTH:
             raise ApiError(400, f"Invite codes are {INVITE_LENGTH} characters")
         return _resp(200, _require(store.join_household(sub, code), "Invite code"))
-    if route_key == "POST /household/invite":
-        return _resp(200, store.rotate_invite(store.household_for(sub)))
 
     hh = store.household_for(sub)
+    if hh is None:
+        raise ApiError(409, "No household yet. Start one or join one with a code.")
+
+    if route_key == "POST /household/invite":
+        return _resp(200, store.rotate_invite(hh))
 
     if route_key == "GET /recipes":
         return _resp(200, store.list_recipes(hh))

@@ -218,6 +218,70 @@ describe('cloud mode', () => {
       expect(localStorage.getItem('gg.tokens')).toBeNull()
     })
 
+    describe('first sign-in: start or join a household', () => {
+      const NEW_USER = { household: { householdId: null, inviteCode: null } }
+      const paths = (calls: { method: string; url: URL }[]) => calls.map((c) => `${c.method} ${c.url.pathname}`)
+
+      it('welcomes a new user without loading any household data', async () => {
+        const { calls } = fakeApi(NEW_USER)
+        await renderApp()
+        expect(await screen.findByRole('heading', { name: 'Welcome' })).toBeInTheDocument()
+        expect(screen.getByText(/Signed in as me@example.com/)).toBeInTheDocument()
+        expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+        expect(paths(calls)).toEqual(['GET /config.json', 'GET /me'])
+      })
+
+      it('starts a new household and lands on its empty recipe book', async () => {
+        const { calls } = fakeApi(NEW_USER)
+        const user = await renderApp()
+        await user.click(await screen.findByRole('button', { name: 'Start a household' }))
+        expect(await screen.findByText('No recipes yet.')).toBeInTheDocument()
+        expect(paths(calls).filter((p) => p === 'POST /household')).toHaveLength(1)
+        await user.click(tab(/Settings/))
+        expect(screen.getByText('NEWHO-ME234')).toBeInTheDocument()
+      })
+
+      it("joins someone else's household instead, without creating one", async () => {
+        const { calls } = fakeApi(NEW_USER)
+        const user = await renderApp()
+        await user.type(await screen.findByLabelText('Invite code'), 'xyz23 abcde')
+        await user.click(screen.getByRole('button', { name: 'Join' }))
+        expect(await screen.findByText('Shared stew')).toBeInTheDocument()
+        expect(calls.find((c) => c.url.pathname === '/household/join')!.body).toEqual({ code: 'XYZ23ABCDE' })
+        expect(paths(calls)).not.toContain('POST /household')
+      })
+
+      it('shows why starting or joining failed, and stays on the welcome screen', async () => {
+        fakeApi(NEW_USER, {
+          [`POST ${CFG.apiUrl}household`]: fail(503, 'Try again shortly'),
+          [`POST ${CFG.apiUrl}household/join`]: fail(404, 'Invite code not found'),
+        })
+        const user = await renderApp()
+        await user.click(await screen.findByRole('button', { name: 'Start a household' }))
+        expect(await screen.findByText('Try again shortly')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Start a household' })).toBeEnabled()
+
+        await user.type(screen.getByLabelText('Invite code'), 'NOPEN-OPE23')
+        await user.click(screen.getByRole('button', { name: 'Join' }))
+        expect(await screen.findByText('Invite code not found')).toBeInTheDocument()
+        expect(screen.getByRole('heading', { name: 'Welcome' })).toBeInTheDocument()
+      })
+
+      it('can sign out from the welcome screen', async () => {
+        fakeApi(NEW_USER)
+        const user = await renderApp()
+        await user.click(await screen.findByRole('button', { name: 'Not you? Sign out' }))
+        expect(window.location.assign).toHaveBeenCalledWith(expect.stringContaining('https://auth.example.com/logout?'))
+      })
+    })
+
+    it('shows the app with an error banner if the account cannot be loaded', async () => {
+      fakeApi({}, { [`GET ${CFG.apiUrl}me`]: fail(503, 'Service unavailable') })
+      await renderApp()
+      expect(await screen.findByRole('alert')).toHaveTextContent('Service unavailable')
+      expect(screen.getByRole('navigation')).toBeInTheDocument()
+    })
+
     it('shows a load error as a dismissable banner', async () => {
       fakeApi({}, { [`GET ${CFG.apiUrl}list`]: fail(503, 'Service unavailable') })
       const user = await renderApp()

@@ -73,23 +73,29 @@ class Store:
                 return code
         raise RuntimeError("Could not allocate a unique invite code")
 
-    def get_or_create_household(self, user_sub: str) -> dict:
+    def find_household(self, user_sub: str) -> dict | None:
+        """The user's household, or None if they haven't created or joined one yet."""
+        profile = self.table.get_item(Key={"PK": f"USER#{user_sub}", "SK": "PROFILE"}, ConsistentRead=True).get("Item")
+        return self.get_household(profile["householdId"]) if profile else None
+
+    def create_household(self, user_sub: str) -> dict:
+        """Start a new household for the user. If they already have one, that one is returned instead."""
         key = {"PK": f"USER#{user_sub}", "SK": "PROFILE"}
-        profile = self.table.get_item(Key=key, ConsistentRead=True).get("Item")
-        if profile:
-            return self.get_household(profile["householdId"])
+        existing = self.find_household(user_sub)
+        if existing:
+            return existing
 
         # Build the household completely before pointing the user at it, so any request that finds the
-        # profile also finds its invite code. (The app's first screen sends /me, /recipes and /list at once.)
+        # profile also finds its invite code (e.g. a double-tapped "Start" button, or /me right after).
         household_id = uuid.uuid4().hex
         code = self._claim_invite_code(household_id)
         meta_key = {"PK": f"HH#{household_id}", "SK": "META"}
         self.table.put_item(Item={**meta_key, "inviteCode": code, "createdAt": self._now()})
         if not self._put_if_absent({**key, "householdId": household_id}):
-            # A parallel first request claimed the user: drop ours and use theirs.
+            # A parallel request claimed the user first: drop ours and use theirs.
             self.table.delete_item(Key={"PK": f"INVITE#{code}", "SK": "INVITE"})
             self.table.delete_item(Key=meta_key)
-            return self.get_or_create_household(user_sub)
+            return self.create_household(user_sub)
         return {"householdId": household_id, "inviteCode": code}
 
     def get_household(self, household_id: str) -> dict:
@@ -129,8 +135,9 @@ class Store:
             self.table.delete_item(Key={"PK": f"INVITE#{old}", "SK": "INVITE"})
         return {"householdId": household_id, "inviteCode": code}
 
-    def household_for(self, user_sub: str) -> str:
-        return self.get_or_create_household(user_sub)["householdId"]
+    def household_for(self, user_sub: str) -> str | None:
+        household = self.find_household(user_sub)
+        return household["householdId"] if household else None
 
     # ---- generic helpers ---------------------------------------------------
 

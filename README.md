@@ -84,7 +84,7 @@ When it finishes, open the printed `SiteUrl` on your phone:
 - **iPhone (Safari):** Share → *Add to Home Screen*
 - **Android (Chrome):** ⋮ → *Install app*
 
-For two people, the first person signs in with Google and opens **Settings**, which shows a 10-character invite code (e.g. `ABCDE-FGH23`). The second person signs in with their own Google account and enters that code under *Join a household*. Each account gets 5 join attempts per hour. **New code** in Settings replaces the code if it has leaked; people who already joined stay in.
+On first sign-in, the app asks whether to **join a household** with a code or **start a new one**. For two people, the first person starts one and opens **Settings**, which shows a 10-character invite code (e.g. `ABCDE-FGH23`). The second person signs in with their own Google account and enters that code on the welcome screen. Anyone can also switch household later under *Settings → Join a household*. Each account gets 5 join attempts per hour. **New code** in Settings replaces the code if it has leaked; people who already joined stay in.
 
 **Cost:** at household scale this is effectively free. Everything is pay-per-request, and the Cognito, Lambda and DynamoDB free tiers cover it.
 
@@ -92,11 +92,12 @@ For two people, the first person signs in with Google and opens **Settings**, wh
 
 ## API
 
-Every route needs a Cognito access token (`Authorization: Bearer …`) and is scoped to the caller's household.
+Every route needs a Cognito access token (`Authorization: Bearer …`) and is scoped to the caller's household. Until the caller has started or joined a household, every route except the three household ones returns `409`.
 
 | Method | Path | |
 |---|---|---|
-| GET | `/me` | household id + invite code (creates a household on first call) |
+| GET | `/me` | household id + invite code, or both `null` for a new user who hasn't started or joined one |
+| POST | `/household` | start a household (returns the existing one if the user already has one) |
 | POST | `/household/join` | `{code}`, max 5 attempts per user per hour (429 after that) |
 | POST | `/household/invite` | replace the invite code; the old one stops working |
 | GET / POST | `/recipes` | list / create |

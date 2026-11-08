@@ -31,6 +31,7 @@ describe('CloudBackend', () => {
     saveTokens({ accessToken: 'tok' })
     const { calls } = fakeFetch({
       [`GET ${API}/me`]: ok({ householdId: 'h', inviteCode: 'ABC234' }),
+      [`POST ${API}/household`]: ok({ householdId: 'h', inviteCode: 'ABC234' }),
       [`POST ${API}/household/join`]: ok({ householdId: 'h2', inviteCode: 'XYZ234' }),
       [`POST ${API}/household/invite`]: ok({ householdId: 'h', inviteCode: 'NEWCODE234' }),
       [`GET ${API}/recipes`]: ok([]),
@@ -48,6 +49,7 @@ describe('CloudBackend', () => {
 
     expect(b.mode).toBe('cloud')
     expect(await b.me()).toEqual({ householdId: 'h', inviteCode: 'ABC234' })
+    expect(await b.createHousehold()).toEqual({ householdId: 'h', inviteCode: 'ABC234' })
     expect(await b.joinHousehold('xyz234')).toEqual({ householdId: 'h2', inviteCode: 'XYZ234' })
     expect(await b.rotateInvite()).toEqual({ householdId: 'h', inviteCode: 'NEWCODE234' })
     await b.listRecipes()
@@ -64,6 +66,7 @@ describe('CloudBackend', () => {
 
     expect(calls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toEqual([
       'GET /me',
+      'POST /household',
       'POST /household/join',
       'POST /household/invite',
       'GET /recipes',
@@ -79,11 +82,12 @@ describe('CloudBackend', () => {
       'DELETE /list?checked=true',
     ])
     expect(calls.every((c) => c.headers.authorization === 'Bearer tok')).toBe(true)
-    expect(calls[1].body).toEqual({ code: 'xyz234' })
-    expect(calls[8].body).toEqual({ recipeIds: ['r1'], mode: 'append' })
-    expect(calls[10].body).toEqual({ checked: true })
+    expect(calls[2].body).toEqual({ code: 'xyz234' })
+    expect(calls[9].body).toEqual({ recipeIds: ['r1'], mode: 'append' })
+    expect(calls[11].body).toEqual({ checked: true })
     expect(calls[0].headers['content-type']).toBeUndefined()
-    expect(calls[1].headers['content-type']).toBe('application/json')
+    expect(calls[1].headers['content-type']).toBeUndefined() // POST /household has no body
+    expect(calls[2].headers['content-type']).toBe('application/json')
   })
 
   it('works whether or not the API URL ends with a slash', async () => {
@@ -132,6 +136,7 @@ describe('LocalBackend', () => {
     const b = new LocalBackend()
     expect(b.mode).toBe('local')
     expect(await b.me()).toEqual({ householdId: 'local', inviteCode: null })
+    expect(await b.createHousehold()).toEqual({ householdId: 'local', inviteCode: null })
     await expect(b.joinHousehold()).rejects.toThrow('Sharing needs the cloud version')
     await expect(b.rotateInvite()).rejects.toThrow('Sharing needs the cloud version')
   })

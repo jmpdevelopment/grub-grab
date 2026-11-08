@@ -35,6 +35,15 @@ def error(store, *args, **kwargs):
     return status, body["error"]
 
 
+@pytest.fixture
+def store(table):
+    """Alice and Bob have each started a household, as the app asks on first sign-in. Anyone else hasn't."""
+    s = Store(table)
+    s.create_household("alice")
+    s.create_household("bob")
+    return s
+
+
 PASTA = {
     "title": "Pasta",
     "servings": 2,
@@ -83,7 +92,7 @@ class TestEnvelope:
         assert error(store, "GET /nope") == (404, "No route for GET /nope")
 
     def test_missing_route_key(self, store):
-        resp = handle({"requestContext": {"authorizer": {"jwt": {"claims": {"sub": "a"}}}}}, store)
+        resp = handle({"requestContext": {"authorizer": {"jwt": {"claims": {"sub": "alice"}}}}}, store)
         assert resp["statusCode"] == 404
 
     def test_base64_body(self, store):
@@ -129,6 +138,39 @@ class TestEnvelope:
 
 
 class TestHouseholds:
+    def test_new_user_has_no_household(self, store):
+        assert call(store, "GET /me", sub="carol") == (200, {"householdId": None, "inviteCode": None})
+
+    @pytest.mark.parametrize(
+        "route, kwargs",
+        [
+            ("GET /recipes", {}),
+            ("POST /recipes", {"body": {"title": "Soup"}}),
+            ("GET /list", {}),
+            ("POST /list/items", {"body": {"name": "Milk"}}),
+            ("POST /household/invite", {}),
+        ],
+    )
+    def test_data_needs_a_household_first(self, store, route, kwargs):
+        assert error(store, route, sub="carol", **kwargs) == (409, "No household yet. Start one or join one with a code.")
+        assert call(store, "GET /me", sub="carol")[1]["householdId"] is None  # nothing was created on the way
+
+    def test_start_a_household(self, store):
+        status, started = call(store, "POST /household", sub="carol")
+        assert status == 200 and len(started["inviteCode"]) == 10
+        assert call(store, "GET /me", sub="carol")[1] == started
+        assert call(store, "POST /household", sub="carol")[1] == started  # a second tap changes nothing
+        assert call(store, "GET /recipes", sub="carol") == (200, [])
+
+    def test_join_as_a_brand_new_user(self, store):
+        _, alices = call(store, "GET /me", sub="alice")
+        create(store, PASTA, sub="alice")
+        status, joined = call(store, "POST /household/join", sub="carol", body={"code": alices["inviteCode"]})
+        assert status == 200 and joined == alices
+        assert [r["title"] for r in call(store, "GET /recipes", sub="carol")[1]] == ["Pasta"]
+        metas = [i for i in store.table.scan()["Items"] if i["SK"] == "META"]
+        assert len(metas) == 2  # alice's and bob's: carol never got an empty household of her own
+
     def test_me_is_stable(self, store):
         _, me = call(store, "GET /me")
         assert len(me["inviteCode"]) == 10
@@ -169,7 +211,7 @@ class TestHouseholds:
     def test_join_is_rate_limited_per_user(self, table):
         now = [1_000_000.0]
         s = Store(table, clock=lambda: now[0])
-        _, me = call(s, "GET /me", sub="alice")
+        _, me = call(s, "POST /household", sub="alice")
         for _ in range(5):
             assert call(s, "POST /household/join", sub="mallory", body={"code": "WRONGWRONG"})[0] == 404
         # Even the right code is refused once the limit is hit, and invalid input still counts.
@@ -286,6 +328,8 @@ class TestRecipes:
 
     def test_cannot_touch_another_households_recipe(self, store):
         r = create(store, PASTA, sub="alice")
+        assert error(store, "GET /recipes/{id}", sub="eve", path={"id": r["id"]})[0] == 409  # no household at all
+        call(store, "POST /household", sub="eve")
         assert error(store, "GET /recipes/{id}", sub="eve", path={"id": r["id"]})[0] == 404
         assert error(store, "PUT /recipes/{id}", sub="eve", path={"id": r["id"]}, body=CURRY)[0] == 404
         call(store, "DELETE /recipes/{id}", sub="eve", path={"id": r["id"]})

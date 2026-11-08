@@ -8,7 +8,7 @@ const API = CFG.apiUrl.replace(/\/$/, '')
 export interface ApiState {
   recipes: Recipe[]
   items: ListItem[]
-  household: { householdId: string; inviteCode: string }
+  household: { householdId: string | null; inviteCode: string | null }
 }
 
 let n = 0
@@ -24,10 +24,17 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
     ...initial,
   }
   const itemId = (url: URL) => url.pathname.split('/').pop()!
+  // Like the real API: data routes refuse until the user has started or joined a household.
+  const needsHousehold = (handler: Handler): Handler => (url, init) =>
+    state.household.householdId ? handler(url, init) : json({ error: 'No household yet. Start one or join one with a code.' }, 409)
 
   const routes: Record<string, Handler> = {
     'GET /config.json': () => json(CFG),
     [`GET ${API}/me`]: () => json(state.household),
+    [`POST ${API}/household`]: () => {
+      state.household = state.household.householdId ? state.household : { householdId: 'h-new', inviteCode: 'NEWHOME234' }
+      return json(state.household)
+    },
     [`POST ${API}/household/join`]: (_u, init) => {
       state.household = { householdId: 'h2', inviteCode: body(init).code }
       state.recipes = [{ id: id(), title: 'Shared stew', servings: null, notes: '', ingredients: [] }]
@@ -37,8 +44,8 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
       state.household = { ...state.household, inviteCode: 'ROTATED234' }
       return json(state.household)
     },
-    [`GET ${API}/recipes`]: () => json(state.recipes),
-    [`GET ${API}/list`]: () => json(state.items),
+    [`GET ${API}/recipes`]: needsHousehold(() => json(state.recipes)),
+    [`GET ${API}/list`]: needsHousehold(() => json(state.items)),
     [`POST ${API}/list/generate`]: (_u, init) => {
       const { recipeIds } = body(init)
       state.items = aggregate(state.recipes.filter((r) => recipeIds.includes(r.id))).map((i) => ({ ...i, id: id(), checked: false }))

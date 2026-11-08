@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { HouseholdSetup } from './components/HouseholdSetup'
 import { ListView } from './components/ListView'
 import { RecipeEditor } from './components/RecipeEditor'
 import { RecipesView } from './components/RecipesView'
@@ -64,10 +65,12 @@ export default function App() {
   const refresh = useCallback(async () => {
     if (!backend) return
     await guard(async () => {
-      const [r, l, h] = await Promise.all([backend.listRecipes(), backend.getList(), backend.me()])
+      const h = await backend.me()
+      setHousehold(h)
+      if (!h.householdId) return // new user: the welcome screen asks them to start or join one first
+      const [r, l] = await Promise.all([backend.listRecipes(), backend.getList()])
       setRecipes(r)
       setItems(l)
-      setHousehold(h)
     })
   }, [backend, guard])
 
@@ -106,6 +109,30 @@ export default function App() {
     )
 
   const b = boot.backend
+
+  // Wait for /me before showing anything, so a new user never sees an empty app flash before the welcome screen.
+  // (If /me fails, fall through to the app, which shows the error banner.)
+  if (household === null && !error) return <div className="splash">Loading…</div>
+
+  if (household && !household.householdId)
+    return (
+      <div className="app">
+        <main>
+          <HouseholdSetup
+            email={currentEmail()}
+            onSignOut={() => signOut(cfg!)} // only cloud users lack a household, and cloud mode always has cfg
+            onStart={async () => {
+              setHousehold(await b.createHousehold())
+              await refresh()
+            }}
+            onJoin={async (code) => {
+              setHousehold(await b.joinHousehold(code))
+              await refresh()
+            }}
+          />
+        </main>
+      </div>
+    )
 
   if (editing !== null) {
     const recipe = editing === 'new' ? null : editing
