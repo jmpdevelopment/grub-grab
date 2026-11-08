@@ -62,7 +62,7 @@ export const pl: Messages = {
   'editor.open': 'Otwórz ↗',
   'editor.fill': '✨ Uzupełnij z linku',
   'editor.reading': 'Czytam przepis…',
-  'editor.fillHint': 'Wklej link do strony z przepisem, aby automatycznie uzupełnić składniki.',
+  'editor.fillHint': '✨ Wklej link do strony z przepisem, a AI uzupełni tytuł, porcje, składniki i tagi – do sprawdzenia przed zapisaniem.',
   'editor.filled': 'Uzupełniono na podstawie strony — sprawdź i zapisz. Pozostało importów w tym miesiącu: {count}.',
   'editor.confirmReplaceIngredients': 'Zastąpić wpisane składniki tymi ze strony?',
   'editor.servesLabel': 'Porcje',

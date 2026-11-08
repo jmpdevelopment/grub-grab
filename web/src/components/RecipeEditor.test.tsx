@@ -157,13 +157,16 @@ describe('RecipeEditor', () => {
     it('is only offered when switched on, and once there is a link', async () => {
       setup()
       expect(fill()).not.toBeInTheDocument()
-      expect(screen.queryByText(/fill in the ingredients automatically/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/AI fills in the title, servings, ingredients and tags/)).not.toBeInTheDocument()
     })
 
     it('fills an empty form for review, without saving', async () => {
       const onImport = vi.fn().mockResolvedValue(DRAFT)
       const { user, onSave } = setup({ onImport })
-      expect(screen.getByText(/fill in the ingredients automatically/)).toBeInTheDocument()
+      expect(screen.getByText(/AI fills in the title, servings, ingredients and tags/)).toBeInTheDocument()
+      expect(screen.getByLabelText('Link')).toHaveFocus() // the link comes first: it can fill in everything else
+      const fields = screen.getAllByRole('textbox')
+      expect(fields.indexOf(screen.getByLabelText('Link'))).toBeLessThan(fields.indexOf(screen.getByPlaceholderText('e.g. Chicken curry')))
       await user.type(screen.getByLabelText('Link'), 'kwestiasmaku.com/zupa')
       await user.click(fill()!)
       expect(onImport).toHaveBeenCalledWith('https://kwestiasmaku.com/zupa')

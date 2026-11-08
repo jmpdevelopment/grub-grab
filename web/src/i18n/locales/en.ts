@@ -65,7 +65,7 @@ export const en = {
   'editor.open': 'Open ↗',
   'editor.fill': '✨ Fill from link',
   'editor.reading': 'Reading recipe…',
-  'editor.fillHint': 'Paste a recipe page’s link to fill in the ingredients automatically.',
+  'editor.fillHint': '✨ Paste a recipe page’s link and AI fills in the title, servings, ingredients and tags for you to check.',
   'editor.filled': {
     one: 'Filled in from the page — check it, then Save. {count} import left this month.',
     other: 'Filled in from the page — check it, then Save. {count} imports left this month.',

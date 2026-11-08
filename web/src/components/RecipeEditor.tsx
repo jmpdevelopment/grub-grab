@@ -124,15 +124,12 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
 
       <div className="content">
         {error && <p className="error">{error}</p>}
-        <label className="field">
-          <span>{t('editor.titleLabel')}</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('editor.titlePlaceholder')} autoFocus={!recipe} />
-        </label>
         <div className="field">
           <label htmlFor="recipe-link">{t('editor.linkLabel')}</label>
           <div className="link-row">
             <input
               id="recipe-link"
+              autoFocus={!recipe && Boolean(onImport)}
               type="url"
               inputMode="url"
               autoCapitalize="off"
@@ -157,6 +154,10 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
             ))}
           {imported !== null && <p className="hint">{t('editor.filled', { count: imported })}</p>}
         </div>
+        <label className="field">
+          <span>{t('editor.titleLabel')}</span>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('editor.titlePlaceholder')} autoFocus={!recipe && !onImport} />
+        </label>
         <label className="field narrow">
           <span>{t('editor.servesLabel')}</span>
           <input inputMode="numeric" value={servings} onChange={(e) => setServings(e.target.value.replace(/\D/g, ''))} placeholder="4" />

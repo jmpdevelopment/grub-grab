@@ -62,7 +62,7 @@ export const lt: Messages = {
   'editor.open': 'Atidaryti ↗',
   'editor.fill': '✨ Užpildyti iš nuorodos',
   'editor.reading': 'Skaitomas receptas…',
-  'editor.fillHint': 'Įklijuokite recepto puslapio nuorodą, kad ingredientai būtų užpildyti automatiškai.',
+  'editor.fillHint': '✨ Įklijuokite recepto puslapio nuorodą – DI užpildys pavadinimą, porcijas, ingredientus ir žymas, o jūs patikrinsite.',
   'editor.filled': 'Užpildyta pagal puslapį – patikrinkite ir išsaugokite. Šį mėnesį liko importų: {count}.',
   'editor.confirmReplaceIngredients': 'Pakeisti įvestus ingredientus puslapio ingredientais?',
   'editor.servesLabel': 'Porcijos',
