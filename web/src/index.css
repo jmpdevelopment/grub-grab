@@ -198,3 +198,21 @@ body { overscroll-behavior-y: contain; } /* our pull replaces the browser's own 
 .requests li { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
 .request-who { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
 .request-actions { display: flex; gap: 8px; }
+
+/* ---- loading placeholders ---- */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.loading-cards { display: grid; gap: 10px; }
+.skeleton-card {
+  height: 74px; border-radius: var(--radius); border: 1px solid var(--line);
+  background: linear-gradient(90deg, var(--card) 25%, var(--line) 50%, var(--card) 75%);
+  background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+/* Grey bars where a recipe's title and details will appear. */
+.skeleton-card { position: relative; }
+.skeleton-card::before, .skeleton-card::after {
+  content: ''; position: absolute; left: 56px; height: 12px; border-radius: 6px; background: var(--line);
+}
+.skeleton-card::before { top: 22px; width: 45%; height: 14px; }
+.skeleton-card::after { top: 46px; width: 28%; }
+@keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton-card { animation: none; } }

@@ -31,6 +31,7 @@ export default function App() {
   const [editing, setEditing] = useState<Recipe | null | 'new'>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false) // first recipes + list have arrived
 
   // ---- startup -------------------------------------------------------------
   useEffect(() => {
@@ -77,6 +78,7 @@ export default function App() {
       const [r, l] = await Promise.all([backend.listRecipes(), backend.getList()])
       setRecipes(r)
       setItems(l)
+      setLoaded(true)
     })
   }, [backend, guard])
 
@@ -178,6 +180,8 @@ export default function App() {
   }
 
   const toBuy = items.filter((i) => !i.checked).length
+  // Placeholders until the first load arrives. If it failed, the error banner explains instead.
+  const loading = !loaded && !error
 
   return (
     <div className="app">
@@ -191,6 +195,7 @@ export default function App() {
         {tab === 'recipes' && (
           <RecipesView
             recipes={recipes}
+            loading={loading}
             hasList={items.length > 0}
             onOpen={(r) => setEditing(r ?? 'new')}
             onMakeList={async (ids, mode) => {
@@ -204,6 +209,7 @@ export default function App() {
         {tab === 'list' && (
           <ListView
             items={items}
+            loading={loading}
             onRefresh={refresh}
             onToggle={async (item) => {
               // Optimistic: tick instantly, roll back if the request fails.

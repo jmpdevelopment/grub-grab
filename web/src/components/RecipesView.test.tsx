@@ -83,6 +83,13 @@ describe('RecipesView', () => {
     })
   })
 
+  it('shows placeholders, not "No recipes yet", while loading', () => {
+    render(<RecipesView recipes={[]} loading hasList={false} onOpen={vi.fn()} onMakeList={vi.fn()} />)
+    expect(screen.getByRole('status')).toHaveTextContent('Loading recipes…')
+    expect(screen.queryByText('No recipes yet.')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '+ New' })).toBeInTheDocument() // can still add one
+  })
+
   it('invites you to add the first recipe when empty', async () => {
     const { user, onOpen } = setup([])
     expect(screen.getByText('No recipes yet.')).toBeInTheDocument()

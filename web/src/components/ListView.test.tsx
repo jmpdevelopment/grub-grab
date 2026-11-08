@@ -18,7 +18,7 @@ const GARLIC = item('g', 'Garlic', { quantity: 7, unit: 'cloves', recipes: ['Pas
 const SALT = item('s', 'Salt')
 const RICE = item('r', 'Rice', { quantity: 1, unit: 'kg', checked: true })
 
-function setup(items: ListItem[]) {
+function setup(items: ListItem[], loading = false) {
   const props = {
     onToggle: vi.fn(),
     onAdd: vi.fn().mockResolvedValue(undefined),
@@ -26,7 +26,7 @@ function setup(items: ListItem[]) {
     onClear: vi.fn().mockResolvedValue(undefined),
     onRefresh: vi.fn(),
   }
-  render(<ListView items={items} {...props} />)
+  render(<ListView items={items} loading={loading} {...props} />)
   return { user: userEvent.setup(), ...props }
 }
 
@@ -43,6 +43,12 @@ afterEach(() => {
 })
 
 describe('ListView', () => {
+  it('shows placeholders, not "Your list is empty", while loading', () => {
+    setup([], true)
+    expect(screen.getByRole('status')).toHaveTextContent('Loading your list…')
+    expect(screen.queryByText('Your list is empty.')).not.toBeInTheDocument()
+  })
+
   it('shows an empty state', () => {
     setup([])
     expect(screen.getByText('Your list is empty.')).toBeInTheDocument()

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { formatQty, listAsText, parseIngredientLine } from '../lib/aggregate'
 import type { ListItem } from '../types'
+import { LoadingCards } from './LoadingCards'
 
 interface Props {
   items: ListItem[]
@@ -9,9 +10,11 @@ interface Props {
   onDelete: (item: ListItem) => void
   onClear: (onlyChecked: boolean) => Promise<void>
   onRefresh: () => void
+  /** True until the first load has arrived: show placeholders, not "Your list is empty". */
+  loading?: boolean
 }
 
-export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh }: Props) {
+export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh, loading = false }: Props) {
   const [draft, setDraft] = useState('')
   const [toast, setToast] = useState<string | null>(null)
 
@@ -75,7 +78,9 @@ export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh 
           <button className="btn" disabled={!draft.trim()}>Add</button>
         </form>
 
-        {items.length === 0 ? (
+        {loading ? (
+          <LoadingCards label="Loading your list…" />
+        ) : items.length === 0 ? (
           <div className="empty">
             <p>Your list is empty.</p>
             <p className="muted">Tick some recipes on the Recipes tab to build one.</p>

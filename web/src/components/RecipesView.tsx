@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { safeHref } from '../lib/links'
 import type { Recipe } from '../types'
+import { LoadingCards } from './LoadingCards'
 
 const tagsOf = (r: Recipe) => r.tags ?? [] // recipes saved before tags existed have none
 
@@ -9,9 +10,11 @@ interface Props {
   onOpen: (r: Recipe | null) => void
   onMakeList: (ids: string[], mode: 'replace' | 'append') => Promise<void>
   hasList: boolean
+  /** True until the first load has arrived: show placeholders, not "No recipes yet". */
+  loading?: boolean
 }
 
-export function RecipesView({ recipes, onOpen, onMakeList, hasList }: Props) {
+export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = false }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState<string | null>(null)
@@ -71,7 +74,9 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList }: Props) {
           </div>
         )}
 
-        {recipes.length === 0 ? (
+        {loading ? (
+          <LoadingCards label="Loading recipes…" />
+        ) : recipes.length === 0 ? (
           <div className="empty">
             <p>No recipes yet.</p>
             <button className="btn" onClick={() => onOpen(null)}>Add your first recipe</button>

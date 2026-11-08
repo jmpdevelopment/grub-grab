@@ -364,6 +364,24 @@ describe('cloud mode', () => {
       })
     })
 
+    it('shows placeholders while recipes load, never a false "No recipes yet"', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((r) => (release = r))
+      // The recipes request is held back until we release it.
+      fakeApi({ recipes: [PASTA] }, { [`GET ${CFG.apiUrl}recipes`]: async () => (await gate, json([PASTA])) })
+      const user = await renderApp()
+      expect(await screen.findByText('Loading recipes…')).toBeInTheDocument()
+      expect(screen.queryByText('No recipes yet.')).not.toBeInTheDocument()
+      await user.click(tab(/List/))
+      expect(screen.getByText('Loading your list…')).toBeInTheDocument()
+      expect(screen.queryByText('Your list is empty.')).not.toBeInTheDocument()
+      await act(async () => release())
+      expect(await screen.findByText('Your list is empty.')).toBeInTheDocument()
+      await user.click(tab(/Recipes/))
+      expect(screen.getByText('Pasta')).toBeInTheDocument()
+      expect(screen.queryByText('Loading recipes…')).not.toBeInTheDocument()
+    })
+
     it('shows the app with an error banner if the account cannot be loaded', async () => {
       fakeApi({}, { [`GET ${CFG.apiUrl}me`]: fail(503, 'Service unavailable') })
       await renderApp()
