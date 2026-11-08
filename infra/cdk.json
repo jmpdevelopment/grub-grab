@@ -8,8 +8,5 @@
       "cdk.out",
       "**/__pycache__"
     ]
-  },
-  "context": {
-    "googleClientId": ""
   }
 }

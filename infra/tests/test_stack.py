@@ -10,7 +10,7 @@ from aws_cdk.assertions import Match, Template
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from stack import API_BURST_LIMIT, API_RATE_LIMIT, GrubGrabStack  # noqa: E402
+from stack import API_BURST_LIMIT, API_RATE_LIMIT, CertificateStack, GrubGrabStack, SiteDomain  # noqa: E402
 
 ENV = cdk.Environment(account="123456789012", region="eu-west-2")
 
@@ -248,3 +248,96 @@ def test_bucket_is_private(template):
             }
         },
     )
+
+
+# ---- custom domain ------------------------------------------------------------------------
+
+DOMAIN = SiteDomain("grubgrab.example", "Z0123456789ABCDEFGHIJ")
+
+
+def synth_with_domain() -> tuple[Template, Template]:
+    app = cdk.App(context={"googleClientId": GOOGLE_ID})
+    cert = CertificateStack(
+        app,
+        "TestCert",
+        site_domain=DOMAIN,
+        env=cdk.Environment(account=ENV.account, region="us-east-1"),
+        cross_region_references=True,
+    )
+    main = GrubGrabStack(
+        app, "TestDomain", site_domain=DOMAIN, certificate=cert.certificate, env=ENV, cross_region_references=True
+    )
+    return Template.from_stack(cert), Template.from_stack(main)
+
+
+@pytest.fixture(scope="module")
+def domain_templates() -> tuple[Template, Template]:
+    return synth_with_domain()
+
+
+def test_certificate_is_dns_validated_in_us_east_1(domain_templates):
+    cert, _ = domain_templates
+    props = only(cert, "AWS::CertificateManager::Certificate")
+    assert props["DomainName"] == "grubgrab.example"
+    assert props["ValidationMethod"] == "DNS"
+    assert props["DomainValidationOptions"] == [{"DomainName": "grubgrab.example", "HostedZoneId": DOMAIN.zone_id}]
+
+
+def test_distribution_serves_the_custom_domain(domain_templates):
+    _, main = domain_templates
+    config = only(main, "AWS::CloudFront::Distribution")["DistributionConfig"]
+    assert config["Aliases"] == ["grubgrab.example"]
+    assert config["ViewerCertificate"]["SslSupportMethod"] == "sni-only"
+
+
+def test_dns_points_at_cloudfront(domain_templates):
+    _, main = domain_templates
+    records = [r["Properties"] for r in main.find_resources("AWS::Route53::RecordSet").values()]
+    assert sorted(r["Type"] for r in records) == ["A", "AAAA"]
+    for r in records:
+        assert r["Name"] == "grubgrab.example."
+        assert r["HostedZoneId"] == DOMAIN.zone_id
+        assert "AliasTarget" in r
+
+
+def test_sign_in_and_cors_use_the_custom_domain(domain_templates):
+    _, main = domain_templates
+    client, cors = _client_and_cors(main)
+    assert client["CallbackURLs"] == ["https://grubgrab.example/"]
+    assert client["LogoutURLs"] == ["https://grubgrab.example/"]
+    assert cors["AllowOrigins"] == ["https://grubgrab.example"]
+    assert main.to_json()["Outputs"]["SiteUrl"]["Value"] == "https://grubgrab.example/"
+
+
+def test_custom_domain_stack_has_no_cycles(domain_templates):
+    test_no_dependency_cycles(domain_templates[1])
+
+
+def test_no_dns_records_without_a_domain(template):
+    assert template.find_resources("AWS::Route53::RecordSet") == {}
+    assert "Aliases" not in only(template, "AWS::CloudFront::Distribution")["DistributionConfig"]
+
+
+@pytest.mark.parametrize(
+    "context, expected",
+    [
+        ({}, None),
+        ({"domainName": "", "hostedZoneId": ""}, None),
+        ({"domainName": " GrubGrab.Example. ", "hostedZoneId": " Z1 "}, ("grubgrab.example", "Z1")),
+    ],
+)
+def test_site_domain_from_context(context, expected):
+    domain = SiteDomain.from_context(cdk.App(context=context))
+    assert (domain and (domain.name, domain.zone_id)) == expected
+
+
+@pytest.mark.parametrize("context", [{"domainName": "grubgrab.example"}, {"hostedZoneId": "Z1"}])
+def test_site_domain_needs_both_settings(context):
+    with pytest.raises(ValueError, match="both domainName and hostedZoneId"):
+        SiteDomain.from_context(cdk.App(context=context))
+
+
+def test_domain_and_certificate_go_together(domain_templates):
+    app = cdk.App(context={"googleClientId": GOOGLE_ID})
+    with pytest.raises(ValueError, match="needs its certificate"):
+        GrubGrabStack(app, "NoCert", site_domain=DOMAIN, env=ENV)

@@ -42,7 +42,7 @@ Sign-in is **Google only**: there are no passwords and no email sign-up. You nee
    aws secretsmanager create-secret --region eu-west-2 \
      --name grubgrab/google-client-secret --secret-string 'GOCSPX-...'
    ```
-5. Put the **client ID** (it's public) in `infra/cdk.json` under `context.googleClientId`, or pass `-c googleClientId=...` to `./deploy.sh`.
+5. Put the **client ID** in `infra/settings.local.json` (copy `infra/settings.local.example.json` to start). That file is git-ignored, so your deployment's settings stay out of the repo. You can also pass `-c googleClientId=...` to `./deploy.sh`.
 
 After deploying, the `GoogleRedirectUri` output shows the exact redirect URI to check against step 3.
 
@@ -52,13 +52,26 @@ After deploying, the `GoogleRedirectUri` output shows the exact redirect URI to 
 # one-off
 npm install -g aws-cdk
 pip install -r infra/requirements.txt
-cdk bootstrap --app "python3 infra/app.py"     # once per account/region
+(cd infra && cdk bootstrap)    # once; covers every region the app uses
 
 # each deploy
 ./deploy.sh
 ```
 
-`deploy.sh` builds the web app, then runs `cdk deploy`. The stack:
+### Custom domain (optional)
+
+Without one, the app is served from its CloudFront URL (`https://dxxxx.cloudfront.net/`). To use your own domain, register it in Route 53 in the same AWS account (Route 53 creates its hosted zone), then set both values in `infra/settings.local.json`:
+
+```json
+"domainName": "grubgrab.example",
+"hostedZoneId": "Z0123456789ABCDEFGHIJ"
+```
+
+Find the zone ID with `aws route53 list-hosted-zones`. The deploy then adds a `GrubGrabCert` stack in `us-east-1` (CloudFront only accepts certificates from there), validated through DNS, plus A/AAAA records pointing the domain at CloudFront. Sign-in and the API's CORS use the custom domain only. Bootstrap `us-east-1` too: `(cd infra && cdk bootstrap)` does both regions. The Google OAuth client doesn't change, because sign-in still goes through the Cognito domain.
+
+Changing the domain later is safe for your data, but home-screen installs are tied to the address, so they need re-adding from the new one.
+
+`deploy.sh` builds the web app, then runs `cdk deploy --all`. The stack:
 
 - serves the built app from S3 behind CloudFront
 - writes a `config.json` beside it pointing at the API and Cognito, which switches the app to cloud mode

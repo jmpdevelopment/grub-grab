@@ -5,12 +5,15 @@ from aws_cdk import CfnOutput, Duration, RemovalPolicy, SecretValue, Stack
 from aws_cdk import aws_apigatewayv2 as apigw
 from aws_cdk import aws_apigatewayv2_authorizers as authorizers
 from aws_cdk import aws_apigatewayv2_integrations as integrations
+from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_cloudfront as cloudfront
 from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
+from aws_cdk import aws_route53 as route53
+from aws_cdk import aws_route53_targets as targets
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
 from constructs import Construct
@@ -24,22 +27,70 @@ API_RATE_LIMIT = 10  # steady requests per second
 API_BURST_LIMIT = 20
 LOG_RETENTION = logs.RetentionDays.THREE_MONTHS
 
-# Google sign-in. The client ID is public (it appears in the browser); put it in cdk.json or pass
-# `-c googleClientId=...`. The client secret lives in Secrets Manager, never in the repo.
+# Google sign-in. The client ID goes in settings.local.json (git-ignored) or `-c googleClientId=...`.
+# The client secret lives in Secrets Manager, never in the repo.
 GOOGLE_SECRET_NAME = "grubgrab/google-client-secret"
 
 
-class GrubGrabStack(Stack):
-    """Deploy with `cdk deploy`. Add `-c dev=true` to also allow http://localhost:5173 for local development."""
+class SiteDomain:
+    """Optional custom domain for the site, e.g. grubgrab.example, in a Route 53 hosted zone in this account.
 
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+    Set `domainName` and `hostedZoneId` in settings.local.json (or pass both with -c). The zone ID is given rather
+    than looked up, so synth needs no AWS credentials. Leave both empty to use the CloudFront URL.
+    """
+
+    def __init__(self, name: str, zone_id: str) -> None:
+        self.name = name
+        self.zone_id = zone_id
+
+    @classmethod
+    def from_context(cls, scope: Construct) -> "SiteDomain | None":
+        name = (scope.node.try_get_context("domainName") or "").strip().lower().rstrip(".")
+        zone_id = (scope.node.try_get_context("hostedZoneId") or "").strip()
+        if bool(name) != bool(zone_id):
+            raise ValueError("Set both domainName and hostedZoneId for a custom domain, or neither.")
+        return cls(name, zone_id) if name else None
+
+    def zone(self, scope: Construct) -> route53.IHostedZone:
+        return route53.HostedZone.from_hosted_zone_attributes(
+            scope, "Zone", hosted_zone_id=self.zone_id, zone_name=self.name
+        )
+
+
+class CertificateStack(Stack):
+    """TLS certificate for the custom domain. CloudFront only accepts certificates from us-east-1."""
+
+    def __init__(self, scope: Construct, construct_id: str, *, site_domain: SiteDomain, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+        self.certificate = acm.Certificate(
+            self,
+            "Certificate",
+            domain_name=site_domain.name,
+            validation=acm.CertificateValidation.from_dns(site_domain.zone(self)),
+        )
+
+
+class GrubGrabStack(Stack):
+    """Deploy with `cdk deploy --all`. Add `-c dev=true` to also allow http://localhost:5173 for local development."""
+
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        *,
+        site_domain: SiteDomain | None = None,
+        certificate: acm.ICertificate | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(scope, construct_id, **kwargs)
+        if bool(site_domain) != bool(certificate):
+            raise ValueError("A custom domain needs its certificate (and vice versa).")
         dev = str(self.node.try_get_context("dev")).lower() == "true"
         google_client_id = (self.node.try_get_context("googleClientId") or "").strip()
         if not google_client_id:
             raise ValueError(
-                "Missing Google OAuth client ID. Add it to infra/cdk.json under context.googleClientId "
-                "or pass -c googleClientId=... (see README: 'Google sign-in')."
+                "Missing Google OAuth client ID. Add it to infra/settings.local.json (copy "
+                "settings.local.example.json) or pass -c googleClientId=... (see README: 'Google sign-in')."
             )
 
         # ---- data ---------------------------------------------------------------
@@ -187,8 +238,17 @@ class GrubGrabStack(Stack):
                 cloudfront.ErrorResponse(http_status=code, response_http_status=200, response_page_path="/index.html")
                 for code in (403, 404)
             ],
+            domain_names=[site_domain.name] if site_domain else None,
+            certificate=certificate,
         )
-        site_url = f"https://{distribution.distribution_domain_name}/"
+        if site_domain:
+            zone = site_domain.zone(self)
+            target = route53.RecordTarget.from_alias(targets.CloudFrontTarget(distribution))
+            route53.ARecord(self, "SiteRecord", zone=zone, target=target)
+            route53.AaaaRecord(self, "SiteRecordIpv6", zone=zone, target=target)
+            site_url = f"https://{site_domain.name}/"
+        else:
+            site_url = f"https://{distribution.distribution_domain_name}/"
         app_urls = [site_url] + ([LOCAL_DEV_URL] if dev else [])
 
         client = user_pool.add_client(

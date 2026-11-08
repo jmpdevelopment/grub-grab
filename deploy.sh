@@ -7,4 +7,4 @@ echo "==> Building web app"
 (cd web && npm ci && npm run build)
 
 echo "==> Deploying"
-(cd infra && cdk deploy --require-approval never "$@")
+(cd infra && cdk deploy --all --require-approval never "$@")

@@ -11,3 +11,5 @@ __pycache__/
 web/public/config.json
 .coverage
 coverage/
+# Deployment-specific settings (Google client ID, domain, hosted zone): see infra/settings.local.example.json
+infra/settings.local.json
