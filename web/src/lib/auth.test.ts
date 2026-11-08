@@ -7,7 +7,7 @@ const tokenResponse = (over = {}) =>
   json({ id_token: jwt({ email: 'a@b.c' }), access_token: 'access-new', refresh_token: 'refresh-new', expires_in: 3600, ...over })
 
 describe('signIn', () => {
-  it('redirects to the hosted UI with a PKCE challenge that matches the stored verifier', async () => {
+  it('redirects straight to Google via Cognito, with a PKCE challenge matching the stored verifier', async () => {
     const { assign } = fakeLocation('http://localhost/')
     await signIn(CFG)
 
@@ -16,6 +16,7 @@ describe('signIn', () => {
     expect(Object.fromEntries(url.searchParams)).toMatchObject({
       response_type: 'code',
       client_id: 'client-123',
+      identity_provider: 'Google',
       redirect_uri: 'http://localhost/',
       scope: 'openid email',
       code_challenge_method: 'S256',

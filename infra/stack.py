@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, SecretValue, Stack
 from aws_cdk import aws_apigatewayv2 as apigw
 from aws_cdk import aws_apigatewayv2_authorizers as authorizers
 from aws_cdk import aws_apigatewayv2_integrations as integrations
@@ -24,6 +24,10 @@ API_RATE_LIMIT = 10  # steady requests per second
 API_BURST_LIMIT = 20
 LOG_RETENTION = logs.RetentionDays.THREE_MONTHS
 
+# Google sign-in. The client ID is public (it appears in the browser); put it in cdk.json or pass
+# `-c googleClientId=...`. The client secret lives in Secrets Manager, never in the repo.
+GOOGLE_SECRET_NAME = "grubgrab/google-client-secret"
+
 
 class GrubGrabStack(Stack):
     """Deploy with `cdk deploy`. Add `-c dev=true` to also allow http://localhost:5173 for local development."""
@@ -31,6 +35,12 @@ class GrubGrabStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
         dev = str(self.node.try_get_context("dev")).lower() == "true"
+        google_client_id = (self.node.try_get_context("googleClientId") or "").strip()
+        if not google_client_id:
+            raise ValueError(
+                "Missing Google OAuth client ID. Add it to infra/cdk.json under context.googleClientId "
+                "or pass -c googleClientId=... (see README: 'Google sign-in')."
+            )
 
         # ---- data ---------------------------------------------------------------
         table = dynamodb.TableV2(
@@ -47,15 +57,28 @@ class GrubGrabStack(Stack):
         )
 
         # ---- auth -----------------------------------------------------------------
+        # Google is the only way in: no passwords, no self-service email sign-up.
+        # (Federated users are still created automatically on their first Google sign-in.)
         user_pool = cognito.UserPool(
             self,
             "Users",
-            self_sign_up_enabled=True,
+            self_sign_up_enabled=False,
             sign_in_aliases=cognito.SignInAliases(email=True),
-            auto_verify=cognito.AutoVerifiedAttrs(email=True),
-            account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
-            password_policy=cognito.PasswordPolicy(min_length=10, require_symbols=False),
+            account_recovery=cognito.AccountRecovery.NONE,  # nothing to recover; Google handles that
             removal_policy=RemovalPolicy.RETAIN,
+        )
+        google = cognito.UserPoolIdentityProviderGoogle(
+            self,
+            "Google",
+            user_pool=user_pool,
+            client_id=google_client_id,
+            client_secret_value=SecretValue.secrets_manager(GOOGLE_SECRET_NAME),
+            scopes=["openid", "email", "profile"],
+            attribute_mapping=cognito.AttributeMapping(
+                email=cognito.ProviderAttribute.GOOGLE_EMAIL,
+                email_verified=cognito.ProviderAttribute.GOOGLE_EMAIL_VERIFIED,
+                fullname=cognito.ProviderAttribute.GOOGLE_NAME,
+            ),
         )
         domain = user_pool.add_domain(
             "Domain",
@@ -171,7 +194,8 @@ class GrubGrabStack(Stack):
         client = user_pool.add_client(
             "WebClient",
             generate_secret=False,
-            prevent_user_existence_errors=True,  # same error for "no such user" and "wrong password"
+            supported_identity_providers=[cognito.UserPoolClientIdentityProvider.GOOGLE],
+            prevent_user_existence_errors=True,
             enable_token_revocation=True,
             o_auth=cognito.OAuthSettings(
                 flows=cognito.OAuthFlows(authorization_code_grant=True),
@@ -183,6 +207,7 @@ class GrubGrabStack(Stack):
             id_token_validity=Duration.hours(1),
             refresh_token_validity=Duration.days(365),  # stay signed in on your phone
         )
+        client.node.add_dependency(google)  # the client can only list Google once the provider exists
 
         authorizer = authorizers.HttpJwtAuthorizer(
             "JwtAuth",
@@ -235,3 +260,9 @@ class GrubGrabStack(Stack):
         CfnOutput(self, "ApiUrl", value=api.api_endpoint)
         CfnOutput(self, "CognitoDomain", value=domain.base_url())
         CfnOutput(self, "ClientId", value=client.user_pool_client_id)
+        CfnOutput(
+            self,
+            "GoogleRedirectUri",
+            value=f"{domain.base_url()}/oauth2/idpresponse",
+            description="Add this as an authorised redirect URI on the Google OAuth client",
+        )

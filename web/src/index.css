@@ -56,6 +56,7 @@ main { flex: 1; padding-bottom: calc(72px + var(--safe-bottom)); }
   background: var(--green); color: #fff; cursor: pointer;
 }
 .btn:disabled { opacity: 0.5; }
+.btn.google { background: #fff; color: #1f1f1f; border: 1px solid #747775; }
 .btn.secondary { background: var(--green-soft); color: var(--green); }
 .btn.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); width: 100%; margin-top: 24px; }
 .btn.danger.subtle { border-color: var(--line); color: var(--muted); }

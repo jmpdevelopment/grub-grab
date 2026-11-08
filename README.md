@@ -26,7 +26,25 @@ With no `config.json` present, the app runs in **local mode** and keeps everythi
 
 ## Deploy to AWS
 
-Prerequisites: AWS credentials configured (`aws configure` or SSO), Node 20+, Python 3.12+.
+Prerequisites: AWS credentials configured (`aws configure` or SSO), Node 20+, Python 3.12+, and a Google OAuth client (below).
+
+### Google sign-in (one-off)
+
+Sign-in is **Google only**: there are no passwords and no email sign-up. You need a Google OAuth client. Your Cognito sign-in domain is fixed in advance as `https://grubgrab-<AWS_ACCOUNT_ID>.auth.<REGION>.amazoncognito.com` (e.g. region `eu-west-2`), so you can do this before the first deploy.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/) create or pick a project, open **Google Auth Platform** and click **Get started**. Set an app name and support email, and choose audience **External**. Then, under **Data Access**, add the scopes `openid`, `email` and `profile`.
+2. Under **Audience**, either add your Google accounts as **test users**, or click **Publish app**. Until it's published, only listed test users can sign in. These basic scopes don't need Google's review.
+3. Under **Clients → Create client**, choose **Web application** and add:
+   - Authorised JavaScript origin: `https://grubgrab-<AWS_ACCOUNT_ID>.auth.<REGION>.amazoncognito.com`
+   - Authorised redirect URI: `https://grubgrab-<AWS_ACCOUNT_ID>.auth.<REGION>.amazoncognito.com/oauth2/idpresponse`
+4. Store the **client secret** in AWS Secrets Manager. It never goes in the repo. Secrets Manager costs about $0.40/month.
+   ```bash
+   aws secretsmanager create-secret --region eu-west-2 \
+     --name grubgrab/google-client-secret --secret-string 'GOCSPX-...'
+   ```
+5. Put the **client ID** (it's public) in `infra/cdk.json` under `context.googleClientId`, or pass `-c googleClientId=...` to `./deploy.sh`.
+
+After deploying, the `GoogleRedirectUri` output shows the exact redirect URI to check against step 3.
 
 `./deploy.sh` deploys production, which only accepts sign-ins from the CloudFront URL. To also sign in from `npm run dev` on `http://localhost:5173`, deploy with `./deploy.sh -c dev=true`. Use that for a dev deployment only.
 
@@ -44,7 +62,7 @@ cdk bootstrap --app "python3 infra/app.py"     # once per account/region
 
 - serves the built app from S3 behind CloudFront
 - writes a `config.json` beside it pointing at the API and Cognito, which switches the app to cloud mode
-- creates a Cognito user pool with a hosted sign-in page (email + password; self sign-up is on)
+- creates a Cognito user pool where Google is the only way in (accounts are created on first Google sign-in)
 - runs one Python Lambda behind an HTTP API with a JWT authoriser
 - stores everything in a single on-demand DynamoDB table (kept if you destroy the stack)
 
@@ -53,7 +71,7 @@ When it finishes, open the printed `SiteUrl` on your phone:
 - **iPhone (Safari):** Share → *Add to Home Screen*
 - **Android (Chrome):** ⋮ → *Install app*
 
-For two people, the first person signs up and opens **Settings**, which shows a 10-character invite code (e.g. `ABCDE-FGH23`). The second person signs up and enters that code under *Join a household*. Each account gets 5 join attempts per hour. **New code** in Settings replaces the code if it has leaked; people who already joined stay in.
+For two people, the first person signs in with Google and opens **Settings**, which shows a 10-character invite code (e.g. `ABCDE-FGH23`). The second person signs in with their own Google account and enters that code under *Join a household*. Each account gets 5 join attempts per hour. **New code** in Settings replaces the code if it has leaked; people who already joined stay in.
 
 **Cost:** at household scale this is effectively free. Everything is pay-per-request, and the Cognito, Lambda and DynamoDB free tiers cover it.
 
@@ -83,7 +101,8 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 - Invite codes are 10 characters (about 50 bits), with a per-user limit on join attempts and a way to rotate the code.
 - The API is throttled to 10 requests/second (bursts of 20) to cap cost if an account is abused.
 - CloudFront sends a strict Content-Security-Policy (no inline scripts, `frame-ancestors 'none'`), HSTS, `X-Frame-Options: DENY`, `nosniff` and a referrer policy.
-- Sign-in doesn't reveal whether an email has an account. Tokens can be revoked.
+- Sign-in is Google only: no passwords are stored, and self-service email sign-up is switched off. The Google client secret is read from Secrets Manager at deploy time.
+- Tokens can be revoked. Note that **any** Google account can sign in and get its own empty household; only someone with your invite code can see your data.
 - API access logs (no request bodies or tokens) and Lambda logs are kept for 90 days.
 - `infra/tests` asserts all of the above against the synthesised template.
 
@@ -92,7 +111,7 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 ```bash
 cd api && pip install -r requirements-dev.txt && pytest
 cd web && npm run build && npm run lint
-cd infra && pytest -q tests && cdk synth
+cd infra && pytest -q tests && cdk synth -c googleClientId=dummy
 ```
 
 Quantity merging lives in `api/src/grubgrab/aggregate.py`, mirrored in `web/src/lib/aggregate.ts` for local mode. It converts g↔kg, ml↔l and tsp↔tbsp, and only adds quantities together when the ingredient name and unit family match.

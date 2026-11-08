@@ -150,11 +150,13 @@ describe('cloud mode', () => {
   })
 
   describe('signing in', () => {
-    it('asks you to sign in, then redirects to Cognito', async () => {
+    it('asks you to sign in, then redirects to Google via Cognito', async () => {
       const { calls } = fakeApi()
       const user = await renderApp()
-      await user.click(await screen.findByRole('button', { name: 'Sign in' }))
-      expect(window.location.assign).toHaveBeenCalledWith(expect.stringMatching(/^https:\/\/auth\.example\.com\/oauth2\/authorize\?/))
+      await user.click(await screen.findByRole('button', { name: 'Continue with Google' }))
+      const url = new URL((window.location.assign as unknown as { mock: { calls: string[][] } }).mock.calls[0][0])
+      expect(url.origin + url.pathname).toBe('https://auth.example.com/oauth2/authorize')
+      expect(url.searchParams.get('identity_provider')).toBe('Google')
       expect(calls.map((c) => c.url.pathname)).toEqual(['/config.json'])
     })
 
@@ -177,14 +179,14 @@ describe('cloud mode', () => {
       fakeApi({}, { [`POST ${CFG.cognitoDomain}/oauth2/token`]: fail(400) })
       await renderApp()
       expect(await screen.findByText('Sign-in failed (400)')).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
     })
 
     it('goes back to sign-in when the API rejects the session', async () => {
       saveTokens()
       fakeApi({}, { [`GET ${CFG.apiUrl}recipes`]: () => json({ message: 'Unauthorized' }, 401) })
       await renderApp()
-      expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument()
+      expect(await screen.findByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
     })
   })
 

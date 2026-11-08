@@ -15,8 +15,11 @@ from stack import API_BURST_LIMIT, API_RATE_LIMIT, GrubGrabStack  # noqa: E402
 ENV = cdk.Environment(account="123456789012", region="eu-west-2")
 
 
+GOOGLE_ID = "1234-abc.apps.googleusercontent.com"
+
+
 def synth(**context) -> Template:
-    app = cdk.App(context=context)
+    app = cdk.App(context={"googleClientId": GOOGLE_ID, **context})
     return Template.from_stack(GrubGrabStack(app, "Test", env=ENV))
 
 
@@ -168,6 +171,48 @@ def test_sign_in_does_not_reveal_accounts(template):
     assert client["PreventUserExistenceErrors"] == "ENABLED"
     assert client["EnableTokenRevocation"] is True
     assert client["AllowedOAuthFlows"] == ["code"]
+
+
+# ---- Google-only sign-in ---------------------------------------------------------------
+
+
+def test_google_is_the_only_sign_in_method(template):
+    client = only(template, "AWS::Cognito::UserPoolClient")
+    assert client["SupportedIdentityProviders"] == ["Google"]
+    pool = only(template, "AWS::Cognito::UserPool")
+    assert pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is True  # no email/password sign-up
+    assert pool["AccountRecoverySetting"]["RecoveryMechanisms"] == [{"Name": "admin_only", "Priority": 1}]
+
+
+def test_google_provider(template):
+    idp = only(template, "AWS::Cognito::UserPoolIdentityProvider")
+    assert idp["ProviderName"] == "Google" and idp["ProviderType"] == "Google"
+    details = idp["ProviderDetails"]
+    assert details["client_id"] == GOOGLE_ID
+    assert details["authorize_scopes"] == "openid email profile"
+    assert idp["AttributeMapping"] == {"email": "email", "email_verified": "email_verified", "name": "name"}
+
+
+def test_google_secret_comes_from_secrets_manager_not_the_template(template):
+    secret = json.dumps(only(template, "AWS::Cognito::UserPoolIdentityProvider")["ProviderDetails"]["client_secret"])
+    assert "{{resolve:secretsmanager:grubgrab/google-client-secret" in secret
+
+
+def test_client_waits_for_google_provider(template):
+    clients = template.find_resources("AWS::Cognito::UserPoolClient")
+    idp_id = next(iter(template.find_resources("AWS::Cognito::UserPoolIdentityProvider")))
+    assert idp_id in next(iter(clients.values()))["DependsOn"]
+
+
+def test_redirect_uri_output(template):
+    out = template.to_json()["Outputs"]["GoogleRedirectUri"]
+    assert "/oauth2/idpresponse" in json.dumps(out["Value"])
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_requires_google_client_id(value):
+    with pytest.raises(Exception, match="Missing Google OAuth client ID"):
+        synth(googleClientId=value)
 
 
 # ---- 6. logging ---------------------------------------------------------------------------

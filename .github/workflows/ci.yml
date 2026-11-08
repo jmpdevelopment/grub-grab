@@ -57,7 +57,7 @@ jobs:
       - run: npm install -g aws-cdk && pip install -r infra/requirements.txt pytest
       - run: pytest -q tests  # security settings + no dependency cycles
         working-directory: infra
-      - run: cdk synth --quiet
+      - run: cdk synth --quiet -c googleClientId=ci-placeholder.apps.googleusercontent.com
         working-directory: infra
         env:
           CDK_DEFAULT_ACCOUNT: "123456789012"

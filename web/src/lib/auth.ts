@@ -1,4 +1,5 @@
-// Minimal Cognito Hosted UI sign-in using the OAuth authorization-code flow with PKCE.
+// Minimal Cognito sign-in using the OAuth authorization-code flow with PKCE.
+// Google is the only identity provider, so we skip Cognito's page and go straight to Google.
 import type { AppConfig } from './config'
 
 const TOKENS_KEY = 'gg.tokens'
@@ -54,6 +55,7 @@ export async function signIn(cfg: AppConfig) {
   url.search = new URLSearchParams({
     response_type: 'code',
     client_id: cfg.clientId,
+    identity_provider: 'Google',
     redirect_uri: redirectUri(),
     scope: 'openid email',
     code_challenge_method: 'S256',

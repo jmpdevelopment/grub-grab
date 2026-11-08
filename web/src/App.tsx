@@ -99,8 +99,8 @@ export default function App() {
         <h1>Grub Grab</h1>
         <p className="muted">Recipes in, shopping list out.</p>
         {error && <p className="error">{error}</p>}
-        <button className="btn" onClick={() => signIn(boot.cfg)}>
-          Sign in
+        <button className="btn google" onClick={() => signIn(boot.cfg)}>
+          Continue with Google
         </button>
       </div>
     )
