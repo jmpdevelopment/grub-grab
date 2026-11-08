@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import boto3
 
+from . import ai
 from .aggregate import aggregate, combine
 from .store import INVITE_LENGTH, Store, normalise_invite_code
 
@@ -27,6 +28,7 @@ MAX_JOIN_ATTEMPTS_PER_HOUR = 5
 MAX_RECIPES = 500
 MAX_LIST_ITEMS = 500
 ADMIN_GROUP = "admins"  # Cognito group; members approve sign-up requests
+DEFAULT_AI_MONTHLY_LIMIT = 20  # AI recipe imports per household per month (AI_MONTHLY_LIMIT overrides)
 
 _store: Store | None = None
 
@@ -204,6 +206,36 @@ def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
     return store.list_items(hh)
 
 
+_extractor: ai.RecipeExtractor | None = None
+
+
+def _get_extractor() -> ai.RecipeExtractor:
+    """One per warm Lambda container, so the API key is read from Secrets Manager once."""
+    global _extractor
+    if _extractor is None:
+        _extractor = ai.get_extractor()
+    return _extractor
+
+
+def _import_recipe(store: Store, hh: str, data: dict) -> dict:
+    """Fill a recipe draft from a web page with AI. Nothing is saved: the app shows it for review first."""
+    if not ai.enabled():
+        raise ApiError(404, "Recipe import isn't set up on this server.")
+    link = _link(data.get("link"))
+    if not link:
+        raise ApiError(400, "Paste a link to a recipe page first")
+    # Count the attempt before calling the AI, so the monthly allowance also caps what failures can cost.
+    limit = int(os.environ.get("AI_MONTHLY_LIMIT") or DEFAULT_AI_MONTHLY_LIMIT)
+    used = store.record_ai_import(hh)
+    if used > limit:
+        raise ApiError(429, f"Your household has used this month's {limit} recipe imports. Add this one by hand.")
+    try:
+        draft = _get_extractor().extract(link)
+    except ai.ExtractionError as err:
+        raise ApiError(422, str(err)) from err
+    return _resp(200, {"recipe": draft, "remaining": limit - used})
+
+
 def _delete_sign_in(username: str) -> None:
     """Remove the Cognito user, so the account is gone and its sessions stop working."""
     client = boto3.client("cognito-idp")
@@ -294,6 +326,8 @@ def route(event: dict, store: Store) -> dict:
         if store.count_recipes(hh) >= MAX_RECIPES:
             raise ApiError(409, f"You've reached the limit of {MAX_RECIPES} recipes. Delete some to add more.")
         return _resp(201, store.put_recipe(hh, recipe))
+    if route_key == "POST /recipes/import":
+        return _import_recipe(store, hh, _body(event))
     if route_key == "GET /recipes/{id}":
         return _resp(200, _require(store.get_recipe(hh, params["id"]), "Recipe"))
     if route_key == "PUT /recipes/{id}":

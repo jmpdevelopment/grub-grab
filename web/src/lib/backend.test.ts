@@ -35,6 +35,7 @@ describe('CloudBackend', () => {
       [`POST ${API}/admin/requests/Google_1%20x/approve`]: ok({ status: 'approved' }),
       [`POST ${API}/admin/requests/Google_2/decline`]: ok({ status: 'declined' }),
       [`POST ${API}/admin/requests/decline-pending`]: ok({ declined: 3 }),
+      [`POST ${API}/recipes/import`]: ok({ recipe: { title: 'T', servings: null, link: 'https://e.com', ingredients: [] }, remaining: 3 }),
       [`DELETE ${API}/me`]: ok({ deleted: true, householdDeleted: false }),
       [`POST ${API}/household`]: ok({ householdId: 'h', inviteCode: 'ABC234' }),
       [`POST ${API}/household/join`]: ok({ householdId: 'h2', inviteCode: 'XYZ234' }),
@@ -54,6 +55,7 @@ describe('CloudBackend', () => {
 
     expect(b.mode).toBe('cloud')
     expect(await b.me()).toEqual({ householdId: 'h', inviteCode: 'ABC234' })
+    expect((await b.importRecipe('https://e.com')).remaining).toBe(3)
     expect(await b.deleteAccount()).toBeUndefined()
     expect(await b.listAccessRequests()).toEqual([])
     expect(await b.decideAccess('Google_1 x', true)).toBeUndefined()
@@ -76,6 +78,7 @@ describe('CloudBackend', () => {
 
     expect(calls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toEqual([
       'GET /me',
+      'POST /recipes/import',
       'DELETE /me',
       'GET /admin/requests',
       'POST /admin/requests/Google_1%20x/approve',
@@ -99,6 +102,7 @@ describe('CloudBackend', () => {
     expect(calls.every((c) => c.headers.authorization === 'Bearer tok')).toBe(true)
     const body = (path: string) => calls.find((c) => `${c.method} ${c.url.pathname}${c.url.search}` === path)!
     expect(body('POST /household/join').body).toEqual({ code: 'xyz234' })
+    expect(body('POST /recipes/import').body).toEqual({ link: 'https://e.com' })
     expect(body('POST /list/generate').body).toEqual({ recipeIds: ['r1'], mode: 'append' })
     expect(body('PATCH /list/items/i1').body).toEqual({ checked: true })
     expect(body('GET /me').headers['content-type']).toBeUndefined()
@@ -154,6 +158,7 @@ describe('LocalBackend', () => {
     expect(await b.me()).toEqual({ householdId: 'local', inviteCode: null })
     expect(await b.createHousehold()).toEqual({ householdId: 'local', inviteCode: null })
     await b.createRecipe({ title: 'Soup', servings: null, notes: '', ingredients: [] })
+    await expect(b.importRecipe()).rejects.toThrow('Recipe import needs the cloud version')
     await b.deleteAccount() // local mode: wipes this device's data
     expect(await b.listRecipes()).toEqual([])
     expect(await b.listAccessRequests()).toEqual([])

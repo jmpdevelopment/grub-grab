@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { parseIngredientLine } from '../lib/aggregate'
 import { normaliseLink, safeHref } from '../lib/links'
 import { cleanTag, SUGGESTED_TAGS } from '../lib/tags'
-import type { Ingredient, Recipe, RecipeInput } from '../types'
+import type { ImportedRecipe, Ingredient, Recipe, RecipeInput } from '../types'
 
 interface Props {
   recipe: Recipe | null
@@ -11,13 +11,15 @@ interface Props {
   onSave: (r: RecipeInput) => Promise<void>
   onDelete?: () => Promise<void>
   onCancel: () => void
+  /** "Fill from link": AI reads the page and fills the form for review. Absent when it's switched off. */
+  onImport?: (link: string) => Promise<ImportedRecipe>
 }
 
 type Row = { name: string; quantity: string; unit: string }
 const toRow = (i: Ingredient): Row => ({ name: i.name, quantity: i.quantity === null ? '' : String(i.quantity), unit: i.unit })
 const emptyRow = (): Row => ({ name: '', quantity: '', unit: '' })
 
-export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCancel }: Props) {
+export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCancel, onImport }: Props) {
   const [title, setTitle] = useState(recipe?.title ?? '')
   const [servings, setServings] = useState(recipe?.servings ? String(recipe.servings) : '')
   const [notes, setNotes] = useState(recipe?.notes ?? '')
@@ -28,6 +30,8 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
   const [paste, setPaste] = useState('')
   const [showPaste, setShowPaste] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [imported, setImported] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const updateRow = (idx: number, patch: Partial<Row>) => {
@@ -59,6 +63,29 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
   }
   const openHref = safeHref(normaliseLink(link) ?? undefined) // only once it's a usable web address
   const suggestions = [...new Set([...knownTags, ...SUGGESTED_TAGS])].filter((t) => !tags.includes(t))
+
+  // Fills the form from the page; the person checks it and taps Save. Typed ingredients are only replaced
+  // after asking, and a title or servings already entered are kept.
+  const fillFromLink = async () => {
+    if (rows.some((r) => r.name.trim()) && !confirm('Replace the ingredients you’ve entered with the ones from the page?')) return
+    setImporting(true)
+    setError(null)
+    setImported(null)
+    try {
+      const { recipe: draft, remaining } = await onImport!(openHref!)
+      setTitle((current) => current.trim() || draft.title)
+      setServings((current) => current || (draft.servings ? String(draft.servings) : ''))
+      setLink(draft.link)
+      setRows([...draft.ingredients.map(toRow), emptyRow()])
+      setImported(
+        `Filled in from the page — check it, then Save. ${remaining} import${remaining === 1 ? '' : 's'} left this month.`,
+      )
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setImporting(false)
+    }
+  }
 
   const save = async () => {
     if (!title.trim()) return setError('Give the recipe a title')
@@ -116,6 +143,15 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
               </a>
             )}
           </div>
+          {onImport &&
+            (openHref ? (
+              <button className="btn import" disabled={importing || busy} onClick={fillFromLink}>
+                {importing ? 'Reading recipe…' : '✨ Fill from link'}
+              </button>
+            ) : (
+              <p className="hint">Paste a recipe page’s link to fill in the ingredients automatically.</p>
+            ))}
+          {imported && <p className="hint">{imported}</p>}
         </div>
         <label className="field narrow">
           <span>Serves</span>

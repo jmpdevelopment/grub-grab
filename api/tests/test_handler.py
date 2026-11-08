@@ -5,7 +5,7 @@ from decimal import Decimal
 import boto3
 import pytest
 
-from grubgrab import handler
+from grubgrab import ai, handler
 from grubgrab.handler import handle, lambda_handler
 from grubgrab.store import Store
 
@@ -660,3 +660,91 @@ class TestDeleteAccount:
     def test_needs_the_username_from_the_token(self, store, pool):
         assert self.delete_me(store, "alice", None) == (400, {"error": "Can't tell which account to delete"})
         assert call(store, "GET /me", sub="alice")[1]["householdId"]  # nothing deleted
+
+
+# ---- AI recipe import ---------------------------------------------------------------------
+
+
+class FakeExtractor:
+    """Stands in for an AI provider (the external boundary): records links, returns a draft or raises."""
+
+    def __init__(self, result=None):
+        self.links = []
+        self.result = result
+
+    def extract(self, link):
+        self.links.append(link)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result or {"title": "Soup", "servings": 2, "link": link, "ingredients": [{"name": "leek", "quantity": 1.0, "unit": ""}]}
+
+
+class TestRecipeImport:
+    @pytest.fixture
+    def extractor(self, monkeypatch):
+        fake = FakeExtractor()
+        monkeypatch.setenv("AI_PROVIDER", "fake")
+        monkeypatch.setenv("AI_MONTHLY_LIMIT", "2")
+        monkeypatch.setattr(handler, "_extractor", fake)
+        return fake
+
+    def test_returns_a_draft_without_saving_anything(self, store, extractor):
+        status, body = call(store, "POST /recipes/import", body={"link": " https://example.com/soup "})
+        assert status == 200
+        assert body == {
+            "recipe": {"title": "Soup", "servings": 2, "link": "https://example.com/soup", "ingredients": [{"name": "leek", "quantity": 1.0, "unit": ""}]},
+            "remaining": 1,
+        }
+        assert extractor.links == ["https://example.com/soup"]
+        assert call(store, "GET /recipes")[1] == []  # nothing saved until the person reviews it and taps Save
+
+    def test_monthly_allowance_per_household(self, table, extractor, monkeypatch):
+        now = [1_794_000_000.0]  # November 2026
+        s = Store(table, clock=lambda: now[0])
+        s.create_household("alice")
+        s.create_household("bob")
+        for remaining in (1, 0):
+            assert call(s, "POST /recipes/import", body={"link": "https://e.com/a"})[1]["remaining"] == remaining
+        assert error(s, "POST /recipes/import", body={"link": "https://e.com/a"}) == (
+            429,
+            "Your household has used this month's 2 recipe imports. Add this one by hand.",
+        )
+        assert len(extractor.links) == 2  # the refused one never reached the AI
+        assert call(s, "POST /recipes/import", sub="bob", body={"link": "https://e.com/b"})[0] == 200  # per household
+        now[0] += 31 * 24 * 3600  # next month starts fresh
+        assert call(s, "POST /recipes/import", body={"link": "https://e.com/a"})[0] == 200
+
+    def test_failed_imports_still_count(self, store, extractor):
+        extractor.result = ai.ExtractionError("Couldn't find a recipe on that page.")
+        assert error(store, "POST /recipes/import", body={"link": "https://e.com/x"}) == (422, "Couldn't find a recipe on that page.")
+        assert error(store, "POST /recipes/import", body={"link": "https://e.com/x"})[0] == 422
+        assert error(store, "POST /recipes/import", body={"link": "https://e.com/x"})[0] == 429
+
+    @pytest.mark.parametrize(
+        "body, expected",
+        [
+            ({}, (400, "Paste a link to a recipe page first")),
+            ({"link": "  "}, (400, "Paste a link to a recipe page first")),
+            ({"link": "javascript:alert(1)"}, (400, "Link must be a web address starting with http:// or https://")),
+        ],
+    )
+    def test_needs_a_web_link(self, store, extractor, body, expected):
+        assert error(store, "POST /recipes/import", body=body) == expected
+        assert extractor.links == []
+
+    def test_needs_a_household(self, store, extractor):
+        assert error(store, "POST /recipes/import", sub="carol", body={"link": "https://e.com"})[0] == 409
+
+    def test_off_when_no_provider_is_configured(self, store, monkeypatch):
+        monkeypatch.delenv("AI_PROVIDER", raising=False)
+        assert error(store, "POST /recipes/import", body={"link": "https://e.com"}) == (404, "Recipe import isn't set up on this server.")
+
+    def test_default_allowance_and_one_extractor_per_container(self, store, monkeypatch):
+        made = []
+        monkeypatch.setenv("AI_PROVIDER", "fake")
+        monkeypatch.delenv("AI_MONTHLY_LIMIT", raising=False)
+        monkeypatch.setattr(handler, "_extractor", None)
+        monkeypatch.setattr(ai, "get_extractor", lambda: made.append(1) or FakeExtractor())
+        first = call(store, "POST /recipes/import", body={"link": "https://e.com"})[1]
+        call(store, "POST /recipes/import", body={"link": "https://e.com"})
+        assert first["remaining"] == handler.DEFAULT_AI_MONTHLY_LIMIT - 1 and made == [1]

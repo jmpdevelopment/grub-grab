@@ -4,6 +4,8 @@ export interface AppConfig {
   apiUrl: string
   cognitoDomain: string // e.g. https://grubgrab-abc123.auth.eu-west-2.amazoncognito.com
   clientId: string
+  /** "Fill from link" (AI recipe import) is switched on for this deployment. */
+  aiImport?: boolean
 }
 
 let cached: AppConfig | null | undefined

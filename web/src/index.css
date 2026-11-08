@@ -219,3 +219,6 @@ body { overscroll-behavior-y: contain; } /* our pull replaces the browser's own 
 
 .legal { text-align: center; font-size: 0.85rem; margin-top: 24px; }
 .legal a { color: var(--muted); }
+
+.btn.import { margin-top: 10px; width: 100%; }
+.field > .hint { margin: 8px 0 0; }

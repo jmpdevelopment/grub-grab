@@ -5,5 +5,10 @@
   "region": "eu-west-2",
   "notifyEmail": "you@example.com",
   "monthlyBudgetUsd": 5,
-  "contactEmail": "you@example.com"
+  "contactEmail": "you@example.com",
+  "aiProvider": "",
+  "aiModel": "claude-opus-5-5",
+  "aiEffort": "low",
+  "aiMonthlyLimit": 20,
+  "anthropicAwsWorkspaceId": ""
 }

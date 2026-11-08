@@ -1,6 +1,7 @@
 """Assertions on the synthesised CloudFormation, covering the security settings."""
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,10 +26,12 @@ ENV = cdk.Environment(account="123456789012", region="eu-west-2")
 
 
 GOOGLE_ID = "1234-abc.apps.googleusercontent.com"
+# Skip packaging the Lambda code (pip) in unit tests; test_pip_bundling covers it.
+BASE = {"googleClientId": GOOGLE_ID, "aws:cdk:bundling-stacks": []}
 
 
 def synth(**context) -> Template:
-    app = cdk.App(context={"googleClientId": GOOGLE_ID, **context})
+    app = cdk.App(context={**BASE, **context})
     return Template.from_stack(GrubGrabStack(app, "Test", env=ENV))
 
 
@@ -265,7 +268,7 @@ DOMAIN = SiteDomain("grubgrab.example", "Z0123456789ABCDEFGHIJ")
 
 
 def synth_with_domain() -> tuple[Template, Template]:
-    app = cdk.App(context={"googleClientId": GOOGLE_ID})
+    app = cdk.App(context=BASE)
     cert = CertificateStack(
         app,
         "TestCert",
@@ -347,7 +350,7 @@ def test_site_domain_needs_both_settings(context):
 
 
 def test_domain_and_certificate_go_together(domain_templates):
-    app = cdk.App(context={"googleClientId": GOOGLE_ID})
+    app = cdk.App(context=BASE)
     with pytest.raises(ValueError, match="needs its certificate"):
         GrubGrabStack(app, "NoCert", site_domain=DOMAIN, env=ENV)
 
@@ -463,9 +466,96 @@ def test_privacy_page_gets_the_contact_address_at_deploy_time():
     assert "{{" not in page and page.count("me@example.com") == 4  # two mailto links, two visible
     assert 'href="mailto:a&amp;b@x.com"' in privacy_page("a&b@x.com")  # escaped
     assert "the app&#x27;s administrator" in privacy_page("")
-    for required in ["Google API Services User Data Policy", "Limited Use", "Delete my account", "London"]:
+    for required in ["Google API Services User Data Policy", "Limited Use", "Delete my account", "London", "Anthropic", "never sent to an AI model"]:
         assert required in page
 
 
 def test_contact_address_can_differ_from_the_notification_address():
     synth(notifyEmail="alerts@example.com", contactEmail="privacy@example.com")  # synthesises cleanly
+
+
+
+# ---- AI recipe import ----------------------------------------------------------------------
+
+
+def test_ai_import_is_off_unless_configured(template):
+    env = functions(template)["grubgrab.handler.lambda_handler"]["Environment"]["Variables"]
+    assert not any(k.startswith("AI_") or k.startswith("ANTHROPIC") for k in env)
+    assert "secretsmanager" not in json.dumps(policy_actions(template, "ApiFnServiceRole"))
+    template.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "POST /recipes/import", "AuthorizationType": "JWT"})
+
+
+@pytest.mark.parametrize(
+    "context, expected",
+    [
+        ({"aiProvider": "anthropic"}, {"AI_MODEL": "claude-opus-5-5", "AI_EFFORT": "low", "AI_MONTHLY_LIMIT": "20"}),
+        (
+            {"aiProvider": "anthropic", "aiModel": "claude-sonnet-5-5", "aiEffort": "medium", "aiMonthlyLimit": 50},
+            {"AI_MODEL": "claude-sonnet-5-5", "AI_EFFORT": "medium", "AI_MONTHLY_LIMIT": "50"},
+        ),
+    ],
+)
+def test_ai_import_settings_and_key_access(context, expected):
+    t = synth(**context)
+    env = functions(t)["grubgrab.handler.lambda_handler"]["Environment"]["Variables"]
+    assert env["AI_PROVIDER"] == "anthropic" and env["ANTHROPIC_SECRET_NAME"] == "grubgrab/anthropic-api-key"
+    assert {k: env[k] for k in expected} == expected
+    secret = [s for s in policy_actions(t, "ApiFnServiceRole") if "secretsmanager" in json.dumps(s["Action"])]
+    assert len(secret) == 1
+    assert sorted(secret[0]["Action"]) == ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]
+    assert "secret:grubgrab/anthropic-api-key-??????" in json.dumps(secret[0]["Resource"])  # that one secret only
+    assert "secretsmanager" not in json.dumps(policy_actions(t, "SignupFnServiceRole"))
+
+
+def test_claude_platform_on_aws_needs_no_key_only_its_workspace():
+    t = synth(aiProvider="anthropic-aws", anthropicAwsWorkspaceId="wrkspc_01Test")
+    env = functions(t)["grubgrab.handler.lambda_handler"]["Environment"]["Variables"]
+    assert env["AI_PROVIDER"] == "anthropic-aws" and env["ANTHROPIC_AWS_WORKSPACE_ID"] == "wrkspc_01Test"
+    assert "ANTHROPIC_SECRET_NAME" not in env
+    statements = policy_actions(t, "ApiFnServiceRole")
+    assert "secretsmanager" not in json.dumps(statements)
+    inference = [s for s in statements if s["Action"] == "aws-external-anthropic:CreateInference"]
+    assert len(inference) == 1
+    assert inference[0]["Resource"] == "arn:aws:aws-external-anthropic:eu-west-2:123456789012:workspace/wrkspc_01Test"
+    tokens = [s for s in statements if "sts:GetWebIdentityToken" in json.dumps(s["Action"])]
+    assert tokens[0]["Action"] == ["sts:GetWebIdentityToken", "sts:TagGetWebIdentityToken"]
+    assert "aws-external-anthropic" not in json.dumps(policy_actions(t, "SignupFnServiceRole"))
+
+
+@pytest.mark.parametrize(
+    "context, message",
+    [
+        ({"aiProvider": "anthropic-aws"}, "needs anthropicAwsWorkspaceId"),
+        ({"aiProvider": "gemini"}, "Unknown aiProvider 'gemini'"),
+    ],
+)
+def test_ai_provider_settings_are_checked(context, message):
+    with pytest.raises(ValueError, match=message):
+        synth(**context)
+
+
+def test_pip_bundling(tmp_path):
+    from stack import API_REQUIREMENTS, PipBundling
+
+    commands = []
+
+    def ok(command, check):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    assert PipBundling(run=ok).try_bundle(str(tmp_path)) is True
+    command = commands[0]
+    assert command[1:4] == ["-m", "pip", "install"] and str(API_REQUIREMENTS) in command
+    for flag in ["--platform", "manylinux2014_aarch64", "--python-version", "3.13", "--only-binary=:all:", str(tmp_path)]:
+        assert flag in command
+    assert (tmp_path / "grubgrab" / "handler.py").exists() and (tmp_path / "grubgrab" / "ai" / "recipe.py").exists()
+    assert not list(tmp_path.rglob("__pycache__"))
+
+    failed = PipBundling(run=lambda command, check: subprocess.CompletedProcess(command, 1))
+    assert failed.try_bundle(str(tmp_path / "other")) is False  # CDK then builds it in Docker
+
+
+def test_requirements_pin_the_sdk_major():
+    from stack import API_REQUIREMENTS
+
+    assert "anthropic>=2.6,<3" in API_REQUIREMENTS.read_text()

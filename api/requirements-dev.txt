@@ -1,4 +1,6 @@
+-r requirements.txt
 boto3
-moto[dynamodb,cognitoidp,sns,sqs]>=5
+anthropic[aws]>=2.6,<3
+moto[dynamodb,cognitoidp,sns,sqs,secretsmanager]>=5
 pytest
 pytest-cov

@@ -58,6 +58,31 @@ pip install -r infra/requirements.txt
 ./deploy.sh
 ```
 
+### Fill from link: AI recipe import (optional)
+
+In the recipe editor, **✨ Fill from link** reads a recipe page with AI and fills in the title, servings and ingredients (translated into English, with units the shopping list can add up). It only fills the form: you check it and tap **Save**. Each household gets `aiMonthlyLimit` imports a month (default 20); the attempt is counted before the AI is called, so failures count too.
+
+It uses Claude. There are two ways to connect, and both make the same requests:
+
+**Claude Platform on AWS (recommended): no key at all.** The function signs its requests with its own AWS role, and usage is billed through AWS Marketplace on your AWS bill, so the monthly budget alert covers it.
+
+1. In the AWS Console, open **Claude Platform on AWS**, choose **Sign up** (an AWS Marketplace subscription) and finish the Anthropic organization setup it redirects you to.
+2. Create a workspace in your region (e.g. `eu-west-2`) and copy its ID (`wrkspc_...`).
+3. Once per AWS account: `aws iam enable-outbound-web-identity-federation`.
+4. In `infra/settings.local.json` set `"aiProvider": "anthropic-aws"` and `"anthropicAwsWorkspaceId": "wrkspc_..."`, then deploy. The function gets `aws-external-anthropic:CreateInference` on that workspace only.
+
+**Claude API with a key** (`"aiProvider": "anthropic"`): create a key at [console.anthropic.com](https://console.anthropic.com), set a monthly spend limit there (Anthropic bills it separately from AWS), and store the key in Secrets Manager:
+```bash
+aws secretsmanager create-secret --region eu-west-2 \
+  --name grubgrab/anthropic-api-key --secret-string 'sk-ant-...'
+```
+
+Either way, `aiModel` (default `claude-opus-5-5`), `aiEffort` (default `low`; reading one page needs little reasoning) and `aiMonthlyLimit` are optional settings.
+
+Claude reads the page with Anthropic's web fetch tool, so the API never downloads arbitrary URLs itself. A rough cost is a few cents per import on Opus. The app sends only the link: no information about the user or their Google account goes to the AI provider.
+
+**Adding another provider** (e.g. Gemini or OpenAI): everything provider-specific is in `api/src/grubgrab/ai/`. Write a module with a class whose `extract(link)` returns `recipe.to_draft(...)`, reusing `RECIPE_INSTRUCTIONS` and `RECIPE_SCHEMA` from `ai/recipe.py`; register it in `_PROVIDERS` in `ai/__init__.py`; add its permissions in `_grant_ai_access` in `infra/stack.py`; then set `aiProvider` (and `aiModel`). (`anthropic-aws` was added exactly this way.) The endpoint, allowance, validation, app and tests don't change.
+
 ### Custom domain (optional)
 
 Without one, the app is served from its CloudFront URL (`https://dxxxx.cloudfront.net/`). To use your own domain, register it in Route 53 in the same AWS account (Route 53 creates its hosted zone), then set both values in `infra/settings.local.json`:
@@ -121,6 +146,7 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 | POST | `/admin/requests/decline-pending` | admins only: decline everyone waiting |
 | POST | `/household/join` | `{code}`, max 5 attempts per user per hour (429 after that) |
 | POST | `/household/invite` | replace the invite code; the old one stops working |
+| POST | `/recipes/import` | `{link}`: AI reads the page and returns `{recipe, remaining}` to review in the editor; nothing is saved. 404 when switched off, 429 past the monthly allowance, 422 when no recipe could be read |
 | GET / POST | `/recipes` | list / create. A recipe is `{title, servings, notes, link, tags, ingredients}`; `link` must be an http(s) address; tags are lower-cased and de-duplicated, max 20 of 30 characters |
 | GET / PUT / DELETE | `/recipes/{id}` | |
 | GET | `/list` | shopping list items |

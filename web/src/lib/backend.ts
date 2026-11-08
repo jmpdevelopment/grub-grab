@@ -1,4 +1,4 @@
-import type { AccessRequest, Backend, Household, ListItem, Recipe, RecipeInput } from '../types'
+import type { AccessRequest, Backend, Household, ImportedRecipe, ListItem, Recipe, RecipeInput } from '../types'
 import { aggregate, combine } from './aggregate'
 import { getAccessToken } from './auth'
 import type { AppConfig } from './config'
@@ -35,6 +35,7 @@ export class CloudBackend implements Backend {
   createHousehold = () => this.req<Household>('POST', '/household')
   joinHousehold = (code: string) => this.req<Household>('POST', '/household/join', { code })
   rotateInvite = () => this.req<Household>('POST', '/household/invite')
+  importRecipe = (link: string) => this.req<ImportedRecipe>('POST', '/recipes/import', { link })
   deleteAccount = async () => {
     await this.req('DELETE', '/me')
   }
@@ -103,6 +104,9 @@ export class LocalBackend implements Backend {
   }
   async deleteAccount(): Promise<void> {
     localStorage.removeItem(KEY)
+  }
+  async importRecipe(): Promise<ImportedRecipe> {
+    throw new Error('Recipe import needs the cloud version — see the README to deploy.')
   }
   // Nobody signs up in local mode, so there is never anyone to approve.
   async listAccessRequests(): Promise<AccessRequest[]> {

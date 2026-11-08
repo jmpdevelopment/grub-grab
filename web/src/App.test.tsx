@@ -410,6 +410,28 @@ describe('cloud mode', () => {
       expect(screen.queryByText('Loading recipes…')).not.toBeInTheDocument()
     })
 
+    it('offers "Fill from link" in the editor only when the deployment switches it on', async () => {
+      fakeApi({}, {
+        'GET /config.json': () => json({ ...CFG, aiImport: true }),
+        [`POST ${CFG.apiUrl}recipes/import`]: () =>
+          json({ recipe: { title: 'Soup', servings: 2, link: 'https://e.com/soup', ingredients: [{ name: 'leek', quantity: 1, unit: '' }] }, remaining: 19 }),
+      })
+      const user = await renderApp()
+      await user.click(await screen.findByRole('button', { name: 'Add your first recipe' }))
+      await user.type(screen.getByLabelText('Link'), 'https://e.com/soup')
+      await user.click(screen.getByRole('button', { name: '✨ Fill from link' }))
+      expect(await screen.findByDisplayValue('Soup')).toBeInTheDocument()
+      expect(screen.getByDisplayValue('leek')).toBeInTheDocument()
+    })
+
+    it('has no "Fill from link" when the deployment leaves it off', async () => {
+      fakeApi()
+      const user = await renderApp()
+      await user.click(await screen.findByRole('button', { name: 'Add your first recipe' }))
+      await user.type(screen.getByLabelText('Link'), 'https://e.com/soup')
+      expect(screen.queryByRole('button', { name: '✨ Fill from link' })).not.toBeInTheDocument()
+    })
+
     it('deletes the account and returns to the sign-in screen, signed out', async () => {
       vi.spyOn(window, 'confirm').mockReturnValue(true)
       const { calls } = fakeApi({ recipes: [PASTA] })

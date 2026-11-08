@@ -9,6 +9,7 @@ Key layout:
   PK=HH#<id>           SK=ITEM#<id>        -> name, quantity, unit, checked, recipes
   PK=ACCESS            SK=REQ#<username>   -> email, name, status (pending/approved/declined), requestedAt
   PK=ACCESS            SK=NOTIFY           -> lastAt — at most one "new request" email per hour
+  PK=HH#<id>           SK=AI#<yyyy-mm>     -> imports, expiresAt (TTL) — AI recipe imports this month
 """
 
 from __future__ import annotations
@@ -112,6 +113,17 @@ class Store:
         key = {"PK": f"HH#{household_id}", "SK": "META"}
         meta = self.table.get_item(Key=key, ConsistentRead=True).get("Item") or {}
         return {"householdId": household_id, "inviteCode": meta.get("inviteCode")}
+
+    def record_ai_import(self, household_id: str) -> int:
+        """Count an AI recipe import this calendar month (UTC); returns imports so far, this one included."""
+        month = time.strftime("%Y-%m", time.gmtime(self._now()))
+        resp = self.table.update_item(
+            Key={"PK": f"HH#{household_id}", "SK": f"AI#{month}"},
+            UpdateExpression="ADD imports :one SET expiresAt = if_not_exists(expiresAt, :exp)",
+            ExpressionAttributeValues={":one": 1, ":exp": self._now() + 62 * 24 * 3600},
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(resp["Attributes"]["imports"])
 
     def record_join_attempt(self, user_sub: str) -> int:
         """Count a join attempt in the current hour; returns attempts so far. Old windows expire via TTL."""

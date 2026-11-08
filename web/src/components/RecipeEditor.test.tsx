@@ -139,6 +139,90 @@ describe('RecipeEditor', () => {
     })
   })
 
+  describe('fill from link (AI)', () => {
+    const DRAFT = {
+      recipe: {
+        title: 'Green bean soup',
+        servings: 4,
+        link: 'https://kwestiasmaku.com/zupa',
+        ingredients: [
+          { name: 'potatoes', quantity: 3, unit: '' },
+          { name: 'dill', quantity: null, unit: '' },
+        ],
+      },
+      remaining: 19,
+    }
+    const fill = () => screen.queryByRole('button', { name: '✨ Fill from link' })
+
+    it('is only offered when switched on, and once there is a link', async () => {
+      setup()
+      expect(fill()).not.toBeInTheDocument()
+      expect(screen.queryByText(/fill in the ingredients automatically/)).not.toBeInTheDocument()
+    })
+
+    it('fills an empty form for review, without saving', async () => {
+      const onImport = vi.fn().mockResolvedValue(DRAFT)
+      const { user, onSave } = setup({ onImport })
+      expect(screen.getByText(/fill in the ingredients automatically/)).toBeInTheDocument()
+      await user.type(screen.getByLabelText('Link'), 'kwestiasmaku.com/zupa')
+      await user.click(fill()!)
+      expect(onImport).toHaveBeenCalledWith('https://kwestiasmaku.com/zupa')
+      expect(screen.getByPlaceholderText('e.g. Chicken curry')).toHaveValue('Green bean soup')
+      expect(screen.getByPlaceholderText('4')).toHaveValue('4')
+      expect(names().map((i) => i.value)).toEqual(['potatoes', 'dill', ''])
+      expect(screen.getAllByPlaceholderText('Qty').map((i) => (i as HTMLInputElement).value)).toEqual(['3', '', ''])
+      expect(screen.getByText('Filled in from the page — check it, then Save. 19 imports left this month.')).toBeInTheDocument()
+      expect(onSave).not.toHaveBeenCalled() // nothing saved until you tap Save
+
+      await user.clear(names()[1])
+      await user.type(names()[1], 'fresh dill') // reviewing: fix anything before saving
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      expect(onSave).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Green bean soup',
+          servings: 4,
+          link: 'https://kwestiasmaku.com/zupa',
+          ingredients: [
+            { name: 'potatoes', quantity: 3, unit: '' },
+            { name: 'fresh dill', quantity: null, unit: '' },
+          ],
+        }),
+      )
+    })
+
+    it('keeps what you typed, and asks before replacing ingredients', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+      const onImport = vi.fn().mockResolvedValue({ ...DRAFT, recipe: { ...DRAFT.recipe, servings: null }, remaining: 1 })
+      const { user } = setup({ recipe: { ...PASTA, servings: null, link: 'https://example.com/pasta' }, onImport })
+      await user.click(fill()!)
+      expect(confirm).toHaveBeenCalledWith('Replace the ingredients you’ve entered with the ones from the page?')
+      expect(onImport).not.toHaveBeenCalled()
+
+      await user.click(fill()!)
+      expect(screen.getByPlaceholderText('e.g. Chicken curry')).toHaveValue('Pasta') // your title stays
+      expect(screen.getByPlaceholderText('4')).toHaveValue('')
+      expect(names().map((i) => i.value)).toEqual(['potatoes', 'dill', ''])
+      expect(screen.getByText(/1 import left this month/)).toBeInTheDocument()
+    })
+
+    it('keeps servings you entered', async () => {
+      const { user } = setup({ recipe: { ...PASTA, ingredients: [], link: 'https://e.com/x' }, onImport: vi.fn().mockResolvedValue(DRAFT) })
+      await user.click(fill()!)
+      expect(screen.getByPlaceholderText('4')).toHaveValue('2')
+    })
+
+    it('shows progress, then any problem, and lets you try again', async () => {
+      let fail!: (e: Error) => void
+      const onImport = vi.fn(() => new Promise<never>((_, reject) => (fail = reject)))
+      const { user } = setup({ recipe: { ...PASTA, ingredients: [], link: 'https://e.com/x' }, onImport })
+      await user.click(fill()!)
+      expect(screen.getByRole('button', { name: 'Reading recipe…' })).toBeDisabled()
+      fail(new Error("Couldn't find a recipe on that page."))
+      expect(await screen.findByText("Couldn't find a recipe on that page.")).toBeInTheDocument()
+      expect(fill()).toBeEnabled()
+    })
+  })
+
   describe('link', () => {
     const open = () => screen.queryByRole('link', { name: 'Open ↗' })
 

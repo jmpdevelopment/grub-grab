@@ -1,0 +1,3 @@
+# Lambda already provides boto3/botocore, which anthropic.AnthropicAWS uses for AWS sign-in, so the
+# [aws] extra isn't bundled (it would only add another copy of botocore).
+anthropic>=2.6,<3

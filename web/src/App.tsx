@@ -167,6 +167,7 @@ export default function App() {
       <RecipeEditor
         recipe={recipe}
         knownTags={[...new Set(recipes.flatMap((r) => r.tags ?? []))].sort()}
+        onImport={cfg?.aiImport && b.mode === 'cloud' ? b.importRecipe : undefined}
         onCancel={() => setEditing(null)}
         onSave={async (input) => {
           const saved = recipe ? await b.updateRecipe(recipe.id, input) : await b.createRecipe(input)

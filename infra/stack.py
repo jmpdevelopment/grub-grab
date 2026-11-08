@@ -1,8 +1,12 @@
 import html
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-from aws_cdk import CfnOutput, Duration, RemovalPolicy, SecretValue, Stack
+import jsii
+from aws_cdk import BundlingOptions, CfnOutput, DockerImage, Duration, ILocalBundling, RemovalPolicy, SecretValue, Stack
 from aws_cdk import aws_apigatewayv2 as apigw
 from aws_cdk import aws_apigatewayv2_authorizers as authorizers
 from aws_cdk import aws_apigatewayv2_integrations as integrations
@@ -19,6 +23,7 @@ from aws_cdk import aws_route53 as route53
 from aws_cdk import aws_route53_targets as targets
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_deployment as s3deploy
+from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as subscriptions
 from constructs import Construct
@@ -39,11 +44,54 @@ DB_MAX_READS_PER_SECOND = 300
 API_MAX_CONCURRENCY = 5
 SIGNUP_MAX_CONCURRENCY = 2
 DEFAULT_MONTHLY_BUDGET_USD = 5
+# AI recipe import ("Fill from link"). Off unless aiProvider is set; the API key lives in Secrets Manager.
+ANTHROPIC_SECRET_NAME = "grubgrab/anthropic-api-key"
+DEFAULT_AI_MODEL = "claude-opus-5-5"
+DEFAULT_AI_EFFORT = "low"
+DEFAULT_AI_MONTHLY_LIMIT = 20
 ADMIN_GROUP = "admins"  # must match api/src/grubgrab/handler.py
 
 # Google sign-in. The client ID goes in settings.local.json (git-ignored) or `-c googleClientId=...`.
 # The client secret lives in Secrets Manager, never in the repo.
 GOOGLE_SECRET_NAME = "grubgrab/google-client-secret"
+
+
+API_SRC = ROOT / "api" / "src"
+API_REQUIREMENTS = ROOT / "api" / "requirements.txt"
+
+
+@jsii.implements(ILocalBundling)
+class PipBundling:
+    """Package the API code with its Python dependencies (the Anthropic SDK) for Lambda, without Docker:
+    pip downloads the wheels built for Lambda's Linux on ARM and Python 3.13."""
+
+    def __init__(self, run=subprocess.run):
+        self._run = run
+
+    def try_bundle(self, output_dir: str, *args, **kwargs) -> bool:
+        command = [
+            sys.executable, "-m", "pip", "install", "--quiet", "--no-compile",
+            "--requirement", str(API_REQUIREMENTS), "--target", output_dir,
+            "--platform", "manylinux2014_aarch64", "--implementation", "cp", "--python-version", "3.13",
+            "--only-binary=:all:", "--upgrade",
+        ]  # fmt: skip
+        if self._run(command, check=False).returncode != 0:
+            return False  # fall back to building in the Lambda Docker image
+        shutil.copytree(API_SRC, output_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+        return True
+
+
+def api_code() -> lambda_.Code:
+    return lambda_.Code.from_asset(
+        str(API_SRC.parent),  # api/: the asset hash changes when the code or requirements.txt change
+        exclude=["*", "!src", "!src/**", "!requirements.txt", "**/__pycache__"],
+        bundling=BundlingOptions(
+            image=DockerImage.from_registry("public.ecr.aws/sam/build-python3.13:latest-arm64"),
+            platform="linux/arm64",
+            local=PipBundling(),
+            command=["bash", "-c", "pip install -r requirements.txt -t /asset-output && cp -r src/. /asset-output"],
+        ),
+    )
 
 
 def privacy_page(contact_email: str) -> str:
@@ -163,7 +211,7 @@ class GrubGrabStack(Stack):
         # New people's first Google sign-in is held until an admin approves it (see api/src/grubgrab/signup.py).
         notify_email = (self.node.try_get_context("notifyEmail") or "").strip()
         contact_email = (self.node.try_get_context("contactEmail") or "").strip() or notify_email  # privacy page
-        code = lambda_.Code.from_asset(str(ROOT / "api" / "src"))
+        code = api_code()
         signup_fn = lambda_.Function(
             self,
             "SignupFn",
@@ -230,6 +278,17 @@ class GrubGrabStack(Stack):
             log_group=logs.LogGroup(self, "ApiFnLogs", retention=LOG_RETENTION, removal_policy=RemovalPolicy.DESTROY),
         )
         table.grant_read_write_data(fn)
+        # "Fill from link": AI recipe import, provider and model chosen in settings.local.json.
+        ai_provider = (self.node.try_get_context("aiProvider") or "").strip()
+        if ai_provider:
+            for key, value in {
+                "AI_PROVIDER": ai_provider,
+                "AI_MODEL": (self.node.try_get_context("aiModel") or DEFAULT_AI_MODEL).strip(),
+                "AI_EFFORT": (self.node.try_get_context("aiEffort") or DEFAULT_AI_EFFORT).strip(),
+                "AI_MONTHLY_LIMIT": str(int(self.node.try_get_context("aiMonthlyLimit") or DEFAULT_AI_MONTHLY_LIMIT)),
+            }.items():
+                fn.add_environment(key, value)
+            self._grant_ai_access(fn, ai_provider)
         # "Delete my account" removes the caller's own sign-in. Only this one action, only on this pool;
         # the username always comes from the verified token, never from the request.
         fn.add_environment("USER_POOL_ID", user_pool.user_pool_id)
@@ -374,6 +433,7 @@ class GrubGrabStack(Stack):
             "/household/join": [apigw.HttpMethod.POST],
             "/household/invite": [apigw.HttpMethod.POST],
             "/recipes": [apigw.HttpMethod.GET, apigw.HttpMethod.POST],
+            "/recipes/import": [apigw.HttpMethod.POST],
             "/recipes/{id}": [apigw.HttpMethod.GET, apigw.HttpMethod.PUT, apigw.HttpMethod.DELETE],
             "/list": [apigw.HttpMethod.GET, apigw.HttpMethod.DELETE],
             "/list/generate": [apigw.HttpMethod.POST],
@@ -400,6 +460,7 @@ class GrubGrabStack(Stack):
                         "apiUrl": api.api_endpoint,
                         "cognitoDomain": domain.base_url(),
                         "clientId": client.user_pool_client_id,
+                        "aiImport": bool(ai_provider),  # the app shows "Fill from link" only when it's on
                     },
                 ),
             ],
@@ -419,3 +480,31 @@ class GrubGrabStack(Stack):
             value=f"{domain.base_url()}/oauth2/idpresponse",
             description="Add this as an authorised redirect URI on the Google OAuth client",
         )
+
+    def _grant_ai_access(self, fn: lambda_.Function, provider: str) -> None:
+        """Let the API reach the chosen AI provider, and nothing more."""
+        if provider == "anthropic-aws":
+            # Claude Platform on AWS: requests are signed with the function's role, so there's no key at all.
+            workspace = (self.node.try_get_context("anthropicAwsWorkspaceId") or "").strip()
+            if not workspace:
+                raise ValueError(
+                    "aiProvider 'anthropic-aws' needs anthropicAwsWorkspaceId in infra/settings.local.json "
+                    "(the wrkspc_... ID from Claude Platform on AWS in the AWS Console)."
+                )
+            fn.add_environment("ANTHROPIC_AWS_WORKSPACE_ID", workspace)
+            fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["aws-external-anthropic:CreateInference"],
+                    resources=[f"arn:aws:aws-external-anthropic:{self.region}:{self.account}:workspace/{workspace}"],
+                )
+            )
+            # The client proves the role's identity with a short-lived AWS-signed token (no stored secret).
+            fn.add_to_role_policy(
+                iam.PolicyStatement(actions=["sts:GetWebIdentityToken", "sts:TagGetWebIdentityToken"], resources=["*"])
+            )
+        elif provider == "anthropic":
+            # Claude API with a key: read access to that one secret only (stored by hand, never in the repo).
+            fn.add_environment("ANTHROPIC_SECRET_NAME", ANTHROPIC_SECRET_NAME)
+            secretsmanager.Secret.from_secret_name_v2(self, "AnthropicApiKey", ANTHROPIC_SECRET_NAME).grant_read(fn)
+        else:
+            raise ValueError(f"Unknown aiProvider {provider!r}: use 'anthropic-aws' or 'anthropic' (see api/src/grubgrab/ai).")
