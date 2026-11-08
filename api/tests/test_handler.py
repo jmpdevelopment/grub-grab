@@ -665,40 +665,44 @@ class TestDeleteAccount:
 # ---- AI recipe import ---------------------------------------------------------------------
 
 
-class FakeExtractor:
-    """Stands in for an AI provider (the external boundary): records links, returns a draft or raises."""
-
-    def __init__(self, result=None):
-        self.links = []
-        self.result = result
-
-    def extract(self, link):
-        self.links.append(link)
-        if isinstance(self.result, Exception):
-            raise self.result
-        return self.result or {"title": "Soup", "servings": 2, "link": link, "ingredients": [{"name": "leek", "quantity": 1.0, "unit": ""}]}
-
-
 class TestRecipeImport:
+    """The API side: start a background job, then report it. The worker itself is in test_import_worker.py."""
+
     @pytest.fixture
-    def extractor(self, monkeypatch):
-        fake = FakeExtractor()
-        monkeypatch.setenv("AI_PROVIDER", "fake")
+    def started(self, monkeypatch):
+        jobs = []
+        monkeypatch.setenv("AI_PROVIDER", "anthropic")
         monkeypatch.setenv("AI_MONTHLY_LIMIT", "2")
-        monkeypatch.setattr(handler, "_extractor", fake)
-        return fake
+        monkeypatch.setattr(handler, "_start_import_worker", lambda hh, job, link: jobs.append((hh, job, link)))
+        return jobs
 
-    def test_returns_a_draft_without_saving_anything(self, store, extractor):
+    def test_starts_a_job_and_reports_it_as_pending(self, store, started):
         status, body = call(store, "POST /recipes/import", body={"link": " https://example.com/soup "})
-        assert status == 200
-        assert body == {
-            "recipe": {"title": "Soup", "servings": 2, "link": "https://example.com/soup", "ingredients": [{"name": "leek", "quantity": 1.0, "unit": ""}]},
-            "remaining": 1,
-        }
-        assert extractor.links == ["https://example.com/soup"]
-        assert call(store, "GET /recipes")[1] == []  # nothing saved until the person reviews it and taps Save
+        assert status == 202 and body["remaining"] == 1
+        hh = store.household_for("alice")
+        assert started == [(hh, body["jobId"], "https://example.com/soup")]
+        assert call(store, "GET /recipes/import/{id}", path={"id": body["jobId"]}) == (200, {"status": "pending"})
+        assert call(store, "GET /recipes")[1] == []  # nothing saved: the app shows the result for review
 
-    def test_monthly_allowance_per_household(self, table, extractor, monkeypatch):
+    def test_reports_the_finished_draft_or_the_problem(self, store, started):
+        _, ok = call(store, "POST /recipes/import", body={"link": "https://e.com/a"})
+        _, bad = call(store, "POST /recipes/import", body={"link": "https://e.com/b"})
+        hh = store.household_for("alice")
+        draft = {"title": "Soup", "servings": None, "link": "https://e.com/a", "ingredients": [{"name": "leek", "quantity": 1.5, "unit": ""}]}
+        store.finish_import_job(hh, ok["jobId"], recipe=draft)
+        store.finish_import_job(hh, bad["jobId"], error="Couldn't find a recipe on that page.")
+        assert call(store, "GET /recipes/import/{id}", path={"id": ok["jobId"]}) == (200, {"status": "done", "recipe": draft})
+        assert call(store, "GET /recipes/import/{id}", path={"id": bad["jobId"]}) == (
+            200,
+            {"status": "failed", "error": "Couldn't find a recipe on that page."},
+        )
+
+    def test_jobs_are_private_to_the_household(self, store, started):
+        _, body = call(store, "POST /recipes/import", body={"link": "https://e.com/a"})
+        assert error(store, "GET /recipes/import/{id}", sub="bob", path={"id": body["jobId"]}) == (404, "Import not found")
+        assert error(store, "GET /recipes/import/{id}", path={"id": "nope"}) == (404, "Import not found")
+
+    def test_monthly_allowance_per_household(self, table, started):
         now = [1_794_000_000.0]  # November 2026
         s = Store(table, clock=lambda: now[0])
         s.create_household("alice")
@@ -709,16 +713,14 @@ class TestRecipeImport:
             429,
             "Your household has used this month's 2 recipe imports. Add this one by hand.",
         )
-        assert len(extractor.links) == 2  # the refused one never reached the AI
-        assert call(s, "POST /recipes/import", sub="bob", body={"link": "https://e.com/b"})[0] == 200  # per household
+        assert len(started) == 2  # the refused one never reached the AI
+        assert call(s, "POST /recipes/import", sub="bob", body={"link": "https://e.com/b"})[0] == 202  # per household
         now[0] += 31 * 24 * 3600  # next month starts fresh
-        assert call(s, "POST /recipes/import", body={"link": "https://e.com/a"})[0] == 200
+        assert call(s, "POST /recipes/import", body={"link": "https://e.com/a"})[0] == 202
 
-    def test_failed_imports_still_count(self, store, extractor):
-        extractor.result = ai.ExtractionError("Couldn't find a recipe on that page.")
-        assert error(store, "POST /recipes/import", body={"link": "https://e.com/x"}) == (422, "Couldn't find a recipe on that page.")
-        assert error(store, "POST /recipes/import", body={"link": "https://e.com/x"})[0] == 422
-        assert error(store, "POST /recipes/import", body={"link": "https://e.com/x"})[0] == 429
+    def test_default_allowance(self, store, started, monkeypatch):
+        monkeypatch.delenv("AI_MONTHLY_LIMIT")
+        assert call(store, "POST /recipes/import", body={"link": "https://e.com"})[1]["remaining"] == handler.DEFAULT_AI_MONTHLY_LIMIT - 1
 
     @pytest.mark.parametrize(
         "body, expected",
@@ -728,23 +730,28 @@ class TestRecipeImport:
             ({"link": "javascript:alert(1)"}, (400, "Link must be a web address starting with http:// or https://")),
         ],
     )
-    def test_needs_a_web_link(self, store, extractor, body, expected):
+    def test_needs_a_web_link(self, store, started, body, expected):
         assert error(store, "POST /recipes/import", body=body) == expected
-        assert extractor.links == []
+        assert started == []
 
-    def test_needs_a_household(self, store, extractor):
+    def test_needs_a_household(self, store, started):
         assert error(store, "POST /recipes/import", sub="carol", body={"link": "https://e.com"})[0] == 409
 
     def test_off_when_no_provider_is_configured(self, store, monkeypatch):
         monkeypatch.delenv("AI_PROVIDER", raising=False)
         assert error(store, "POST /recipes/import", body={"link": "https://e.com"}) == (404, "Recipe import isn't set up on this server.")
 
-    def test_default_allowance_and_one_extractor_per_container(self, store, monkeypatch):
-        made = []
-        monkeypatch.setenv("AI_PROVIDER", "fake")
-        monkeypatch.delenv("AI_MONTHLY_LIMIT", raising=False)
-        monkeypatch.setattr(handler, "_extractor", None)
-        monkeypatch.setattr(ai, "get_extractor", lambda: made.append(1) or FakeExtractor())
-        first = call(store, "POST /recipes/import", body={"link": "https://e.com"})[1]
-        call(store, "POST /recipes/import", body={"link": "https://e.com"})
-        assert first["remaining"] == handler.DEFAULT_AI_MONTHLY_LIMIT - 1 and made == [1]
+    def test_hands_the_job_to_the_worker_without_waiting(self, monkeypatch):
+        from botocore.stub import Stubber
+
+        client = boto3.client("lambda")
+        stub = Stubber(client)
+        payload = json.dumps({"householdId": "h1", "jobId": "j1", "link": "https://e.com"}).encode()
+        stub.add_response(
+            "invoke", {"StatusCode": 202}, {"FunctionName": "import-worker", "InvocationType": "Event", "Payload": payload}
+        )
+        monkeypatch.setenv("IMPORT_WORKER_NAME", "import-worker")
+        monkeypatch.setattr(handler.boto3, "client", lambda service: client)
+        with stub:
+            handler._start_import_worker("h1", "j1", "https://e.com")
+        stub.assert_no_pending_responses()

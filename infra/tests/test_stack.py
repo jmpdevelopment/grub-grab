@@ -488,38 +488,61 @@ def test_ai_import_is_off_unless_configured(template):
 @pytest.mark.parametrize(
     "context, expected",
     [
-        ({"aiProvider": "anthropic"}, {"AI_MODEL": "claude-opus-5-5", "AI_EFFORT": "low", "AI_MONTHLY_LIMIT": "20"}),
+        ({"aiProvider": "anthropic"}, {"AI_MODEL": "claude-opus-5-5", "AI_EFFORT": "low", "limit": "20"}),
         (
-            {"aiProvider": "anthropic", "aiModel": "claude-sonnet-5-5", "aiEffort": "medium", "aiMonthlyLimit": 50},
-            {"AI_MODEL": "claude-sonnet-5-5", "AI_EFFORT": "medium", "AI_MONTHLY_LIMIT": "50"},
+            {"aiProvider": "anthropic", "aiModel": "claude-sonnet-5-5", "aiEffort": "medium", "aiMonthlyLimit": 100},
+            {"AI_MODEL": "claude-sonnet-5-5", "AI_EFFORT": "medium", "limit": "100"},
         ),
     ],
 )
-def test_ai_import_settings_and_key_access(context, expected):
+def test_ai_import_runs_in_a_background_worker_that_alone_holds_the_key(context, expected):
     t = synth(**context)
-    env = functions(t)["grubgrab.handler.lambda_handler"]["Environment"]["Variables"]
-    assert env["AI_PROVIDER"] == "anthropic" and env["ANTHROPIC_SECRET_NAME"] == "grubgrab/anthropic-api-key"
-    assert {k: env[k] for k in expected} == expected
-    secret = [s for s in policy_actions(t, "ApiFnServiceRole") if "secretsmanager" in json.dumps(s["Action"])]
-    assert len(secret) == 1
+    fns = functions(t)
+    api_env = fns["grubgrab.handler.lambda_handler"]["Environment"]["Variables"]
+    worker = fns["grubgrab.import_worker.lambda_handler"]
+    worker_env = worker["Environment"]["Variables"]
+    worker_id = logical_id(t, "AWS::Lambda::Function", "grubgrab.import_worker.lambda_handler")
+
+    # The API checks the allowance and starts the worker; it can't reach the AI or its key.
+    assert api_env["AI_PROVIDER"] == "anthropic" and api_env["AI_MONTHLY_LIMIT"] == expected["limit"]
+    assert refs(api_env["IMPORT_WORKER_NAME"]) == {worker_id}
+    assert "ANTHROPIC_SECRET_NAME" not in api_env and "AI_MODEL" not in api_env
+    api_policy = policy_actions(t, "ApiFnServiceRole")
+    assert "secretsmanager" not in json.dumps(api_policy)
+    invoke = [s for s in api_policy if s["Action"] == "lambda:InvokeFunction"]
+    assert len(invoke) == 1 and refs(invoke[0]["Resource"]) == {worker_id}
+
+    # The worker: the model settings and read access to that one secret.
+    assert {k: worker_env[k] for k in ("AI_MODEL", "AI_EFFORT")} == {k: expected[k] for k in ("AI_MODEL", "AI_EFFORT")}
+    assert worker_env["ANTHROPIC_SECRET_NAME"] == "grubgrab/anthropic-api-key"
+    secret = [s for s in policy_actions(t, "ImportWorkerFnServiceRole") if "secretsmanager" in json.dumps(s["Action"])]
     assert sorted(secret[0]["Action"]) == ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]
     assert "secret:grubgrab/anthropic-api-key-??????" in json.dumps(secret[0]["Resource"])  # that one secret only
     assert "secretsmanager" not in json.dumps(policy_actions(t, "SignupFnServiceRole"))
 
+    # Room for a slow page, but bounded: two at a time, and a failure is never retried (it would bill twice).
+    assert worker["Timeout"] == 200 and worker["ReservedConcurrentExecutions"] == 2
+    invoke_config = only(t, "AWS::Lambda::EventInvokeConfig")
+    assert invoke_config["MaximumRetryAttempts"] == 0 and refs(invoke_config["FunctionName"]) == {worker_id}
+    t.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "GET /recipes/import/{id}", "AuthorizationType": "JWT"})
+    assert len(t.find_resources("AWS::Logs::LogGroup")) == 4
+    test_no_dependency_cycles(t)
+
 
 def test_claude_platform_on_aws_needs_no_key_only_its_workspace():
     t = synth(aiProvider="anthropic-aws", anthropicAwsWorkspaceId="wrkspc_01Test")
-    env = functions(t)["grubgrab.handler.lambda_handler"]["Environment"]["Variables"]
+    env = functions(t)["grubgrab.import_worker.lambda_handler"]["Environment"]["Variables"]
     assert env["AI_PROVIDER"] == "anthropic-aws" and env["ANTHROPIC_AWS_WORKSPACE_ID"] == "wrkspc_01Test"
     assert "ANTHROPIC_SECRET_NAME" not in env
-    statements = policy_actions(t, "ApiFnServiceRole")
+    statements = policy_actions(t, "ImportWorkerFnServiceRole")
     assert "secretsmanager" not in json.dumps(statements)
     inference = [s for s in statements if s["Action"] == "aws-external-anthropic:CreateInference"]
     assert len(inference) == 1
     assert inference[0]["Resource"] == "arn:aws:aws-external-anthropic:eu-west-2:123456789012:workspace/wrkspc_01Test"
     tokens = [s for s in statements if "sts:GetWebIdentityToken" in json.dumps(s["Action"])]
     assert tokens[0]["Action"] == ["sts:GetWebIdentityToken", "sts:TagGetWebIdentityToken"]
-    assert "aws-external-anthropic" not in json.dumps(policy_actions(t, "SignupFnServiceRole"))
+    for role in ("ApiFnServiceRole", "SignupFnServiceRole"):
+        assert "aws-external-anthropic" not in json.dumps(policy_actions(t, role))
 
 
 @pytest.mark.parametrize(

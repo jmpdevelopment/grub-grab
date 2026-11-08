@@ -49,6 +49,8 @@ ANTHROPIC_SECRET_NAME = "grubgrab/anthropic-api-key"
 DEFAULT_AI_MODEL = "claude-opus-5-5"
 DEFAULT_AI_EFFORT = "low"
 DEFAULT_AI_MONTHLY_LIMIT = 20
+IMPORT_WORKER_TIMEOUT = Duration.seconds(200)  # a slow page can take a while; well past API Gateway's 30 s
+IMPORT_WORKER_MAX_CONCURRENCY = 2
 ADMIN_GROUP = "admins"  # must match api/src/grubgrab/handler.py
 
 # Google sign-in. The client ID goes in settings.local.json (git-ignored) or `-c googleClientId=...`.
@@ -279,16 +281,38 @@ class GrubGrabStack(Stack):
         )
         table.grant_read_write_data(fn)
         # "Fill from link": AI recipe import, provider and model chosen in settings.local.json.
+        # The API only starts an import job (and checks the allowance); a separate worker does the slow AI
+        # call in the background, and only the worker can reach the AI provider.
         ai_provider = (self.node.try_get_context("aiProvider") or "").strip()
         if ai_provider:
+            worker = lambda_.Function(
+                self,
+                "ImportWorkerFn",
+                runtime=lambda_.Runtime.PYTHON_3_13,
+                architecture=lambda_.Architecture.ARM_64,
+                handler="grubgrab.import_worker.lambda_handler",
+                code=code,
+                memory_size=256,
+                timeout=IMPORT_WORKER_TIMEOUT,
+                reserved_concurrent_executions=IMPORT_WORKER_MAX_CONCURRENCY,
+                retry_attempts=0,  # a failed import is recorded, never re-run (it would call the AI and bill again)
+                environment={
+                    "TABLE_NAME": table.table_name,
+                    "AI_PROVIDER": ai_provider,
+                    "AI_MODEL": (self.node.try_get_context("aiModel") or DEFAULT_AI_MODEL).strip(),
+                    "AI_EFFORT": (self.node.try_get_context("aiEffort") or DEFAULT_AI_EFFORT).strip(),
+                },
+                log_group=logs.LogGroup(self, "ImportWorkerFnLogs", retention=LOG_RETENTION, removal_policy=RemovalPolicy.DESTROY),
+            )
+            table.grant_read_write_data(worker)
+            self._grant_ai_access(worker, ai_provider)
+            worker.grant_invoke(fn)
             for key, value in {
                 "AI_PROVIDER": ai_provider,
-                "AI_MODEL": (self.node.try_get_context("aiModel") or DEFAULT_AI_MODEL).strip(),
-                "AI_EFFORT": (self.node.try_get_context("aiEffort") or DEFAULT_AI_EFFORT).strip(),
                 "AI_MONTHLY_LIMIT": str(int(self.node.try_get_context("aiMonthlyLimit") or DEFAULT_AI_MONTHLY_LIMIT)),
+                "IMPORT_WORKER_NAME": worker.function_name,
             }.items():
                 fn.add_environment(key, value)
-            self._grant_ai_access(fn, ai_provider)
         # "Delete my account" removes the caller's own sign-in. Only this one action, only on this pool;
         # the username always comes from the verified token, never from the request.
         fn.add_environment("USER_POOL_ID", user_pool.user_pool_id)
@@ -434,6 +458,7 @@ class GrubGrabStack(Stack):
             "/household/invite": [apigw.HttpMethod.POST],
             "/recipes": [apigw.HttpMethod.GET, apigw.HttpMethod.POST],
             "/recipes/import": [apigw.HttpMethod.POST],
+            "/recipes/import/{id}": [apigw.HttpMethod.GET],
             "/recipes/{id}": [apigw.HttpMethod.GET, apigw.HttpMethod.PUT, apigw.HttpMethod.DELETE],
             "/list": [apigw.HttpMethod.GET, apigw.HttpMethod.DELETE],
             "/list/generate": [apigw.HttpMethod.POST],

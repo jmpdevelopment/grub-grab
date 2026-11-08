@@ -10,10 +10,12 @@ Key layout:
   PK=ACCESS            SK=REQ#<username>   -> email, name, status (pending/approved/declined), requestedAt
   PK=ACCESS            SK=NOTIFY           -> lastAt — at most one "new request" email per hour
   PK=HH#<id>           SK=AI#<yyyy-mm>     -> imports, expiresAt (TTL) — AI recipe imports this month
+  PK=HH#<id>           SK=IMPORT#<id>      -> status, link, recipe | error, expiresAt (TTL) — one AI import job
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
@@ -33,6 +35,7 @@ PENDING_REQUEST_TTL = 30 * 24 * 3600  # unanswered sign-up requests disappear af
 DECLINED_REQUEST_TTL = 365 * 24 * 3600  # a decline sticks for a year
 NOTIFY_EVERY_SECONDS = 3600
 _ACCESS = "ACCESS"
+IMPORT_JOB_TTL = 24 * 3600  # import results are only needed until the app has picked them up
 
 
 def _strip_keys(item: dict) -> dict:
@@ -124,6 +127,41 @@ class Store:
             ReturnValues="UPDATED_NEW",
         )
         return int(resp["Attributes"]["imports"])
+
+    def create_import_job(self, household_id: str, link: str) -> str:
+        job_id = uuid.uuid4().hex
+        now = self._now()
+        self.table.put_item(
+            Item={
+                "PK": f"HH#{household_id}",
+                "SK": f"IMPORT#{job_id}",
+                "status": "pending",
+                "link": link,
+                "createdAt": now,
+                "expiresAt": now + IMPORT_JOB_TTL,
+            }
+        )
+        return job_id
+
+    def finish_import_job(self, household_id: str, job_id: str, *, recipe: dict | None = None, error: str = "") -> None:
+        if recipe is not None:
+            # DynamoDB stores numbers as Decimal, so round-trip the draft (float quantities) through JSON.
+            stored = json.loads(json.dumps(recipe), parse_float=Decimal)
+            update, values = "SET #s = :s, recipe = :r", {":s": "done", ":r": stored}
+        else:
+            update, values = "SET #s = :s, #e = :e", {":s": "failed", ":e": error}
+        self.table.update_item(
+            Key={"PK": f"HH#{household_id}", "SK": f"IMPORT#{job_id}"},
+            UpdateExpression=update,
+            ExpressionAttributeNames={"#s": "status", **({"#e": "error"} if recipe is None else {})},
+            ExpressionAttributeValues=values,
+        )
+
+    def get_import_job(self, household_id: str, job_id: str) -> dict | None:
+        item = self.table.get_item(Key={"PK": f"HH#{household_id}", "SK": f"IMPORT#{job_id}"}, ConsistentRead=True).get("Item")
+        if not item:
+            return None
+        return {k: item[k] for k in ("status", "recipe", "error") if k in item}
 
     def record_join_attempt(self, user_sub: str) -> int:
         """Count a join attempt in the current hour; returns attempts so far. Old windows expire via TTL."""

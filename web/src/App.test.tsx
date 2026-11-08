@@ -413,8 +413,9 @@ describe('cloud mode', () => {
     it('offers "Fill from link" in the editor only when the deployment switches it on', async () => {
       fakeApi({}, {
         'GET /config.json': () => json({ ...CFG, aiImport: true }),
-        [`POST ${CFG.apiUrl}recipes/import`]: () =>
-          json({ recipe: { title: 'Soup', servings: 2, link: 'https://e.com/soup', ingredients: [{ name: 'leek', quantity: 1, unit: '' }] }, remaining: 19 }),
+        [`POST ${CFG.apiUrl}recipes/import`]: () => json({ jobId: 'j1', remaining: 19 }, 202),
+        [`GET ${CFG.apiUrl}recipes/import/j1`]: () =>
+          json({ status: 'done', recipe: { title: 'Soup', servings: 2, link: 'https://e.com/soup', ingredients: [{ name: 'leek', quantity: 1, unit: '' }] } }),
       })
       const user = await renderApp()
       await user.click(await screen.findByRole('button', { name: 'Add your first recipe' }))

@@ -35,7 +35,8 @@ describe('CloudBackend', () => {
       [`POST ${API}/admin/requests/Google_1%20x/approve`]: ok({ status: 'approved' }),
       [`POST ${API}/admin/requests/Google_2/decline`]: ok({ status: 'declined' }),
       [`POST ${API}/admin/requests/decline-pending`]: ok({ declined: 3 }),
-      [`POST ${API}/recipes/import`]: ok({ recipe: { title: 'T', servings: null, link: 'https://e.com', ingredients: [] }, remaining: 3 }),
+      [`POST ${API}/recipes/import`]: ok({ jobId: 'j1', remaining: 3 }),
+      [`GET ${API}/recipes/import/j1`]: ok({ status: 'done', recipe: { title: 'T', servings: null, link: 'https://e.com', ingredients: [] } }),
       [`DELETE ${API}/me`]: ok({ deleted: true, householdDeleted: false }),
       [`POST ${API}/household`]: ok({ householdId: 'h', inviteCode: 'ABC234' }),
       [`POST ${API}/household/join`]: ok({ householdId: 'h2', inviteCode: 'XYZ234' }),
@@ -79,6 +80,7 @@ describe('CloudBackend', () => {
     expect(calls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toEqual([
       'GET /me',
       'POST /recipes/import',
+      'GET /recipes/import/j1',
       'DELETE /me',
       'GET /admin/requests',
       'POST /admin/requests/Google_1%20x/approve',
@@ -254,5 +256,35 @@ describe('LocalBackend', () => {
     await b.addItem({ name: 'Bread', quantity: null, unit: '' })
     await b.clearList(false)
     expect(await b.getList()).toEqual([])
+  })
+})
+
+describe('CloudBackend: Fill from link (background job)', () => {
+  const draft = { title: 'Soup', servings: 2, link: 'https://e.com', ingredients: [] }
+  const fast = { pollMs: 1, timeoutMs: 50 }
+
+  function job(...states: object[]) {
+    saveTokens({ accessToken: 'tok' })
+    let n = 0
+    return fakeFetch({
+      [`POST ${API}/recipes/import`]: () => json({ jobId: 'j9', remaining: 7 }, 202),
+      [`GET ${API}/recipes/import/j9`]: () => json(states[Math.min(n++, states.length - 1)]),
+    })
+  }
+
+  it('checks until the job is done, then returns the draft', async () => {
+    const { calls } = job({ status: 'pending' }, { status: 'pending' }, { status: 'done', recipe: draft })
+    expect(await new CloudBackend(CFG, fast).importRecipe('https://e.com')).toEqual({ recipe: draft, remaining: 7 })
+    expect(calls.filter((c) => c.url.pathname === '/recipes/import/j9')).toHaveLength(3)
+  })
+
+  it('reports why a job failed', async () => {
+    job({ status: 'pending' }, { status: 'failed', error: "Couldn't find a recipe on that page." })
+    await expect(new CloudBackend(CFG, fast).importRecipe('https://e.com')).rejects.toThrow("Couldn't find a recipe on that page.")
+  })
+
+  it('gives up after a while', async () => {
+    job({ status: 'pending' })
+    await expect(new CloudBackend(CFG, { pollMs: 20, timeoutMs: 30 }).importRecipe('https://e.com')).rejects.toThrow('taking too long')
   })
 })

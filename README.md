@@ -60,7 +60,7 @@ pip install -r infra/requirements.txt
 
 ### Fill from link: AI recipe import (optional)
 
-In the recipe editor, **✨ Fill from link** reads a recipe page with AI and fills in the title, servings and ingredients (translated into English, with units the shopping list can add up). It only fills the form: you check it and tap **Save**. Each household gets `aiMonthlyLimit` imports a month (default 20); the attempt is counted before the AI is called, so failures count too.
+In the recipe editor, **✨ Fill from link** reads a recipe page with AI and fills in the title, servings and ingredients (translated into English, with units the shopping list can add up). It only fills the form: you check it and tap **Save**. Reading a page can take longer than an API request is allowed to (30 s), so the API starts a background worker (up to 200 s, two at a time, never retried) and the app checks on it every 2 seconds. Each household gets `aiMonthlyLimit` imports a month (default 20); the attempt is counted before the AI is called, so failures count too.
 
 It uses Claude. There are two ways to connect, and both make the same requests:
 
@@ -146,7 +146,8 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 | POST | `/admin/requests/decline-pending` | admins only: decline everyone waiting |
 | POST | `/household/join` | `{code}`, max 5 attempts per user per hour (429 after that) |
 | POST | `/household/invite` | replace the invite code; the old one stops working |
-| POST | `/recipes/import` | `{link}`: AI reads the page and returns `{recipe, remaining}` to review in the editor; nothing is saved. 404 when switched off, 429 past the monthly allowance, 422 when no recipe could be read |
+| POST | `/recipes/import` | `{link}`: starts an AI import in the background and returns `202 {jobId, remaining}`. 404 when switched off, 429 past the monthly allowance |
+| GET | `/recipes/import/{id}` | the job: `{status: "pending"}`, `{status: "done", recipe}` to review in the editor (nothing is saved), or `{status: "failed", error}` |
 | GET / POST | `/recipes` | list / create. A recipe is `{title, servings, notes, link, tags, ingredients}`; `link` must be an http(s) address; tags are lower-cased and de-duplicated, max 20 of 30 characters |
 | GET / PUT / DELETE | `/recipes/{id}` | |
 | GET | `/list` | shopping list items |

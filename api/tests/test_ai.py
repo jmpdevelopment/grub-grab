@@ -204,10 +204,10 @@ class TestClaudeAdapter:
         assert [m["role"] for m in sent[1]["body"]["messages"]] == ["user", "assistant"]
 
     def test_gives_up_after_too_many_pauses(self):
-        extractor, sent = claude(*[message("pause_turn", [])] * 4)
+        extractor, sent = claude(*[message("pause_turn", [])] * 3)
         with pytest.raises(ExtractionError, match="Couldn't finish reading that page"):
             extractor.extract(LINK)
-        assert len(sent) == 4
+        assert len(sent) == 3
 
     @pytest.mark.parametrize(
         "reply, error",

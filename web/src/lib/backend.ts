@@ -5,14 +5,29 @@ import type { AppConfig } from './config'
 
 export class AuthRequiredError extends Error {}
 
+/** How "Fill from link" waits for its background job. */
+export interface ImportTiming {
+  pollMs: number
+  timeoutMs: number
+}
+const IMPORT_TIMING: ImportTiming = { pollMs: 2000, timeoutMs: 210_000 }
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+type ImportJob =
+  | { status: 'pending' }
+  | { status: 'done'; recipe: ImportedRecipe['recipe'] }
+  | { status: 'failed'; error: string }
+
 // ---------------------------------------------------------------------------
 // Cloud: talks to the Lambda API. Data is shared across a household.
 // ---------------------------------------------------------------------------
 export class CloudBackend implements Backend {
   readonly mode = 'cloud' as const
   private cfg: AppConfig
-  constructor(cfg: AppConfig) {
+  private timing: ImportTiming
+  constructor(cfg: AppConfig, timing: ImportTiming = IMPORT_TIMING) {
     this.cfg = cfg
+    this.timing = timing
   }
 
   private async req<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -35,7 +50,19 @@ export class CloudBackend implements Backend {
   createHousehold = () => this.req<Household>('POST', '/household')
   joinHousehold = (code: string) => this.req<Household>('POST', '/household/join', { code })
   rotateInvite = () => this.req<Household>('POST', '/household/invite')
-  importRecipe = (link: string) => this.req<ImportedRecipe>('POST', '/recipes/import', { link })
+  /** Starts the AI import (a background job on the server), then checks on it until it's finished. */
+  importRecipe = async (link: string): Promise<ImportedRecipe> => {
+    const { jobId, remaining } = await this.req<{ jobId: string; remaining: number }>('POST', '/recipes/import', { link })
+    const deadline = Date.now() + this.timing.timeoutMs
+    for (;;) {
+      const job = await this.req<ImportJob>('GET', `/recipes/import/${jobId}`)
+      if (job.status === 'done') return { recipe: job.recipe, remaining }
+      if (job.status === 'failed') throw new Error(job.error)
+      if (Date.now() + this.timing.pollMs > deadline)
+        throw new Error('Reading that page is taking too long. Try again later, or add the recipe by hand.')
+      await sleep(this.timing.pollMs)
+    }
+  }
   deleteAccount = async () => {
     await this.req('DELETE', '/me')
   }

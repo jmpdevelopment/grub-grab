@@ -206,19 +206,18 @@ def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
     return store.list_items(hh)
 
 
-_extractor: ai.RecipeExtractor | None = None
-
-
-def _get_extractor() -> ai.RecipeExtractor:
-    """One per warm Lambda container, so the API key is read from Secrets Manager once."""
-    global _extractor
-    if _extractor is None:
-        _extractor = ai.get_extractor()
-    return _extractor
+def _start_import_worker(household_id: str, job_id: str, link: str) -> None:
+    """Hand the job to the import worker function and return at once (it can take longer than an API call)."""
+    boto3.client("lambda").invoke(
+        FunctionName=os.environ["IMPORT_WORKER_NAME"],
+        InvocationType="Event",
+        Payload=json.dumps({"householdId": household_id, "jobId": job_id, "link": link}).encode(),
+    )
 
 
 def _import_recipe(store: Store, hh: str, data: dict) -> dict:
-    """Fill a recipe draft from a web page with AI. Nothing is saved: the app shows it for review first."""
+    """Start filling a recipe draft from a web page with AI. The app polls for the result and shows it for
+    review; nothing is saved by this."""
     if not ai.enabled():
         raise ApiError(404, "Recipe import isn't set up on this server.")
     link = _link(data.get("link"))
@@ -229,11 +228,9 @@ def _import_recipe(store: Store, hh: str, data: dict) -> dict:
     used = store.record_ai_import(hh)
     if used > limit:
         raise ApiError(429, f"Your household has used this month's {limit} recipe imports. Add this one by hand.")
-    try:
-        draft = _get_extractor().extract(link)
-    except ai.ExtractionError as err:
-        raise ApiError(422, str(err)) from err
-    return _resp(200, {"recipe": draft, "remaining": limit - used})
+    job_id = store.create_import_job(hh, link)
+    _start_import_worker(hh, job_id, link)
+    return _resp(202, {"jobId": job_id, "remaining": limit - used})
 
 
 def _delete_sign_in(username: str) -> None:
@@ -328,6 +325,8 @@ def route(event: dict, store: Store) -> dict:
         return _resp(201, store.put_recipe(hh, recipe))
     if route_key == "POST /recipes/import":
         return _import_recipe(store, hh, _body(event))
+    if route_key == "GET /recipes/import/{id}":
+        return _resp(200, _require(store.get_import_job(hh, params["id"]), "Import"))
     if route_key == "GET /recipes/{id}":
         return _resp(200, _require(store.get_recipe(hh, params["id"]), "Recipe"))
     if route_key == "PUT /recipes/{id}":
