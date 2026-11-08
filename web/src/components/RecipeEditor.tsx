@@ -76,6 +76,7 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
       setTitle((current) => current.trim() || draft.title)
       setServings((current) => current || (draft.servings ? String(draft.servings) : ''))
       setLink(draft.link)
+      setTags((current) => (draft.tags ?? []).reduce(withTag, current)) // suggestions join yours
       setRows([...draft.ingredients.map(toRow), emptyRow()])
       setImported(
         `Filled in from the page — check it, then Save. ${remaining} import${remaining === 1 ? '' : 's'} left this month.`,

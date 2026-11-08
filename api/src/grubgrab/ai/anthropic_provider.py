@@ -12,12 +12,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 
 import anthropic
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from .recipe import RECIPE_INSTRUCTIONS, RECIPE_SCHEMA, ExtractionError, to_draft
+from .recipe import RECIPE_INSTRUCTIONS, RECIPE_SCHEMA, ExtractionError, request_text, to_draft
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,39 @@ _MAX_PAUSES = 2  # a server-tool turn can pause; resume it a couple of times at 
 # Runs in the background import worker (not inside an API request), so a slow page has time; the worker's
 # own limit (200 s) covers the worst case of three requests.
 _TIMEOUT_SECONDS = 60.0
+
+
+# List prices in USD per million tokens (input, output, cache read), for the cost estimate in the log.
+# The bill itself is the source of truth; an unknown model is logged without an estimate.
+PRICES = {
+    "claude-opus-5-5": (4.00, 20.00, 0.20),
+    "claude-sonnet-5-5": (2.00, 10.00, 0.20),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01),
+}
+
+
+def _usage_log(model: str, responses: list, seconds: float) -> dict:
+    """One import's usage, summed over every request it made (a paused turn means more than one)."""
+    def total(field: str) -> int:
+        return sum(getattr(r.usage, field, None) or 0 for r in responses)
+
+    entry = {
+        "event": "recipe_import",
+        "model": model,
+        "requests": len(responses),
+        "input_tokens": total("input_tokens"),
+        "output_tokens": total("output_tokens"),
+        "cache_read_tokens": total("cache_read_input_tokens"),
+        "cache_write_tokens": total("cache_creation_input_tokens"),
+        "seconds": round(seconds, 1),
+        "stop": responses[-1].stop_reason,
+        "request_id": responses[-1]._request_id,
+    }
+    if model in PRICES:
+        inp, out, read = PRICES[model]
+        cost = (entry["input_tokens"] + entry["cache_write_tokens"] * 1.25) * inp + entry["output_tokens"] * out
+        entry["estimated_usd"] = round((cost + entry["cache_read_tokens"] * read) / 1_000_000, 4)
+    return entry
 
 
 def _api_key_from_secret(name: str) -> str:
@@ -63,8 +97,10 @@ class AnthropicExtractor:
             raise ExtractionError("Recipe import isn't working right now (server setup). Add the recipe by hand.") from exc
         return cls._configured(anthropic.Anthropic(api_key=key, timeout=_TIMEOUT_SECONDS, max_retries=0))
 
-    def extract(self, link: str) -> dict:
-        messages: list = [{"role": "user", "content": f"Recipe page: {link}"}]
+    def extract(self, link: str, known_tags: list[str]) -> dict:
+        messages: list = [{"role": "user", "content": request_text(link, known_tags)}]
+        responses: list = []
+        started = time.monotonic()
         try:
             for _ in range(_MAX_PAUSES + 1):
                 response = self.client.beta.messages.create(
@@ -78,6 +114,7 @@ class AnthropicExtractor:
                     betas=["server-side-fallback-2026-07-01"],
                     fallbacks="default",
                 )
+                responses.append(response)
                 if response.stop_reason != "pause_turn":
                     break
                 messages.append({"role": "assistant", "content": response.content})
@@ -92,8 +129,7 @@ class AnthropicExtractor:
             log.error("Anthropic request failed: %s", exc)
             raise ExtractionError("Couldn't read that page right now. Try again, or add the recipe by hand.") from exc
 
-        log.info("recipe import: model=%s stop=%s usage=%s request=%s", response.model, response.stop_reason,
-                 response.usage.to_dict() if response.usage else None, response._request_id)
+        log.info(json.dumps(_usage_log(self.model, responses, time.monotonic() - started)))
         if response.stop_reason == "refusal":
             raise ExtractionError("Couldn't read a recipe from that page.")
         if response.stop_reason != "end_turn":  # still paused, or ran out of room

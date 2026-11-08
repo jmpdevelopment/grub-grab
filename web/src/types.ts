@@ -20,7 +20,7 @@ export type RecipeInput = Omit<Recipe, 'id'>
 
 /** What "Fill from link" returns: a draft for the editor to review. It is never saved by itself. */
 export interface ImportedRecipe {
-  recipe: { title: string; servings: number | null; link: string; ingredients: Ingredient[] }
+  recipe: { title: string; servings: number | null; link: string; tags?: string[]; ingredients: Ingredient[] }
   remaining: number // imports left for the household this month
 }
 

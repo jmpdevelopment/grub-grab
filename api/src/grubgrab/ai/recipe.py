@@ -26,12 +26,26 @@ Fetch the page at the link the user gives, then fill in the answer:
     (a Polish "łyżka" is tbsp, "łyżeczka" is tsp, "szklanka" is a glass of about 250 ml).
   - Translate from the page's language into English. Do not invent ingredients that are not on the page,
     and skip equipment, garnish suggestions and serving ideas that are not part of the recipe.
+- tags: 1 to 4 short lower-case labels for finding the recipe later. Give its main ingredient (one of
+  meat, chicken, fish, vegetarian) and, when one fits, the kind of dish (e.g. soup, pasta, salad,
+  stir fry, wraps). Prefer the household's existing tags, listed with the link, over new words for the
+  same thing; only add a new tag when none of them fits.
 """
+
+SUGGESTED_TAGS = ["meat", "chicken", "fish", "vegetarian", "soup", "pasta", "salad", "quick"]
+_MAX_TAGS = 5
+_MAX_KNOWN_TAGS = 50
+
+
+def request_text(link: str, known_tags: list[str]) -> str:
+    """The user turn every provider sends: the link, plus the tags this household already uses."""
+    tags = sorted({t for t in known_tags if t})[:_MAX_KNOWN_TAGS] or SUGGESTED_TAGS
+    return f"Recipe page: {link}\nThe household's existing tags: {', '.join(tags)}"
 
 RECIPE_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["found", "title", "servings", "ingredients"],
+    "required": ["found", "title", "servings", "ingredients", "tags"],
     "properties": {
         "found": {"type": "boolean"},
         "title": {"type": "string"},
@@ -49,6 +63,7 @@ RECIPE_SCHEMA: dict = {
                 },
             },
         },
+        "tags": {"type": "array", "items": {"type": "string"}},
     },
 }
 
@@ -91,11 +106,17 @@ def to_draft(answer: dict, link: str) -> dict:
             break
     if not ingredients:
         raise ExtractionError("Couldn't find any ingredients on that page.")
+    tags: list[str] = []
+    for raw in answer.get("tags") or []:
+        tag = _text(raw, 30).lower()
+        if tag and tag not in tags:
+            tags.append(tag)
     servings = answer.get("servings")
     valid_servings = isinstance(servings, int) and not isinstance(servings, bool) and 1 <= servings <= 1000
     return {
         "title": _text(answer.get("title")) or "Untitled recipe",
         "servings": servings if valid_servings else None,
         "link": link,
+        "tags": tags[:_MAX_TAGS],
         "ingredients": ingredients,
     }

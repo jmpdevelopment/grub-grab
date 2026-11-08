@@ -12,8 +12,10 @@ class Extractor:
 
     def __init__(self, result):
         self.result = result
+        self.known_tags = None
 
-    def extract(self, link):
+    def extract(self, link, known_tags):
+        self.known_tags = known_tags
         if isinstance(self.result, Exception):
             raise self.result
         return {**self.result, "link": link}
@@ -33,6 +35,15 @@ def test_stores_the_draft_for_the_app_to_pick_up(job):
     store, hh, job_id = job
     run(event(hh, job_id), store, lambda: Extractor(DRAFT))
     assert store.get_import_job(hh, job_id) == {"status": "done", "recipe": DRAFT}
+
+
+def test_tells_the_ai_which_tags_the_household_already_uses(job):
+    store, hh, job_id = job
+    store.put_recipe(hh, {"title": "Zurek", "tags": ["soup", "meat"], "ingredients": []})
+    store.put_recipe(hh, {"title": "Old", "ingredients": []})  # saved before tags existed
+    extractor = Extractor(DRAFT)
+    run(event(hh, job_id), store, lambda: extractor)
+    assert sorted(extractor.known_tags) == ["meat", "soup"]
 
 
 def test_stores_a_readable_problem(job):

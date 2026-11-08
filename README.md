@@ -60,7 +60,7 @@ pip install -r infra/requirements.txt
 
 ### Fill from link: AI recipe import (optional)
 
-In the recipe editor, **✨ Fill from link** reads a recipe page with AI and fills in the title, servings and ingredients (translated into English, with units the shopping list can add up). It only fills the form: you check it and tap **Save**. Reading a page can take longer than an API request is allowed to (30 s), so the API starts a background worker (up to 200 s, two at a time, never retried) and the app checks on it every 2 seconds. Each household gets `aiMonthlyLimit` imports a month (default 20); the attempt is counted before the AI is called, so failures count too.
+In the recipe editor, **✨ Fill from link** reads a recipe page with AI and fills in the title, servings, ingredients (translated into English, with units the shopping list can add up) and a few tags, preferring the tags the household already uses. It only fills the form: you check it and tap **Save**. Reading a page can take longer than an API request is allowed to (30 s), so the API starts a background worker (up to 200 s, two at a time, never retried) and the app checks on it every 2 seconds. Each household gets `aiMonthlyLimit` imports a month (default 20); the attempt is counted before the AI is called, so failures count too.
 
 It uses Claude. There are two ways to connect, and both make the same requests:
 
@@ -79,7 +79,7 @@ aws secretsmanager create-secret --region eu-west-2 \
 
 Either way, `aiModel` (default `claude-opus-5-5`), `aiEffort` (default `low`; reading one page needs little reasoning) and `aiMonthlyLimit` are optional settings.
 
-Claude reads the page with Anthropic's web fetch tool, so the API never downloads arbitrary URLs itself. A rough cost is a few cents per import on Opus. The app sends only the link: no information about the user or their Google account goes to the AI provider.
+Each import writes one log line in the import worker's CloudWatch logs (`"event": "recipe_import"`) with its model, requests, tokens, seconds and an `estimated_usd` from list prices; no links or personal details. Claude reads the page with Anthropic's web fetch tool, so the API never downloads arbitrary URLs itself. A rough cost is a few cents per import on Opus. The app sends only the link: no information about the user or their Google account goes to the AI provider.
 
 **Adding another provider** (e.g. Gemini or OpenAI): everything provider-specific is in `api/src/grubgrab/ai/`. Write a module with a class whose `extract(link)` returns `recipe.to_draft(...)`, reusing `RECIPE_INSTRUCTIONS` and `RECIPE_SCHEMA` from `ai/recipe.py`; register it in `_PROVIDERS` in `ai/__init__.py`; add its permissions in `_grant_ai_access` in `infra/stack.py`; then set `aiProvider` (and `aiModel`). (`anthropic-aws` was added exactly this way.) The endpoint, allowance, validation, app and tests don't change.
 

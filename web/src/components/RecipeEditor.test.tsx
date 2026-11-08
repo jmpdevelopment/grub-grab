@@ -205,6 +205,14 @@ describe('RecipeEditor', () => {
       expect(screen.getByText(/1 import left this month/)).toBeInTheDocument()
     })
 
+    it('adds the suggested tags to any you already chose', async () => {
+      const onImport = vi.fn().mockResolvedValue({ ...DRAFT, recipe: { ...DRAFT.recipe, tags: ['Soup', 'vegetarian'] } })
+      const { user } = setup({ recipe: { ...PASTA, ingredients: [], tags: ['quick', 'soup'], link: 'https://e.com/x' }, onImport })
+      await user.click(fill()!)
+      const chips = within(screen.getByRole('group', { name: 'Tags' })).getAllByRole('button').map((b) => b.textContent)
+      expect(chips).toEqual(['quick ×', 'soup ×', 'vegetarian ×'])
+    })
+
     it('keeps servings you entered', async () => {
       const { user } = setup({ recipe: { ...PASTA, ingredients: [], link: 'https://e.com/x' }, onImport: vi.fn().mockResolvedValue(DRAFT) })
       await user.click(fill()!)

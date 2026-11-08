@@ -14,6 +14,8 @@ from . import ai
 from .store import Store
 
 log = logging.getLogger()
+# Lambda shows only warnings by default; keep this app's info lines (e.g. each import's tokens and cost).
+logging.getLogger("grubgrab").setLevel(logging.INFO)
 
 UNEXPECTED = "Couldn't read that page right now. Try again, or add the recipe by hand."
 
@@ -21,7 +23,8 @@ UNEXPECTED = "Couldn't read that page right now. Try again, or add the recipe by
 def run(event: dict, store: Store, get_extractor: Callable[[], ai.RecipeExtractor]) -> None:
     household, job, link = event["householdId"], event["jobId"], event["link"]
     try:
-        draft = get_extractor().extract(link)
+        known_tags = [t for r in store.list_recipes(household) for t in r.get("tags") or []]
+        draft = get_extractor().extract(link, known_tags)
     except ai.ExtractionError as err:
         store.finish_import_job(household, job, error=str(err))
     except Exception:  # a bug or an outage: record it for the app, keep the details in the log

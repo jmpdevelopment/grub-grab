@@ -14,7 +14,7 @@ import pytest
 from grubgrab import ai
 from grubgrab.ai import anthropic_provider
 from grubgrab.ai.anthropic_provider import AnthropicExtractor
-from grubgrab.ai.recipe import RECIPE_SCHEMA, ExtractionError, to_draft
+from grubgrab.ai.recipe import RECIPE_SCHEMA, SUGGESTED_TAGS, ExtractionError, request_text, to_draft
 
 LINK = "https://www.kwestiasmaku.com/przepis/zupa-fasolkowa"
 SOUP = {
@@ -38,6 +38,7 @@ class TestToDraft:
             "title": "Green bean soup",
             "servings": 4,
             "link": LINK,
+            "tags": [],
             "ingredients": [
                 {"name": "potatoes", "quantity": 3.0, "unit": ""},
                 {"name": "garlic", "quantity": 2.0, "unit": "cloves"},
@@ -77,6 +78,10 @@ class TestToDraft:
         assert [i["quantity"] for i in draft["ingredients"]] == [0.333, None, None, None, None, None]
         assert draft["ingredients"][1]["unit"] == ""
 
+    def test_suggested_tags_are_cleaned_and_capped(self):
+        draft = to_draft({**SOUP, "tags": [" Soup ", "soup", "VEGETARIAN", "", 5, None, "x" * 40, "a", "b", "c"]}, LINK)
+        assert draft["tags"] == ["soup", "vegetarian", "x" * 30, "a", "b"]
+
     @pytest.mark.parametrize("servings, expected", [(0, None), (1001, None), ("4", None), (None, None), (1000, 1000)])
     def test_servings_must_be_sensible(self, servings, expected):
         assert to_draft({**SOUP, "servings": servings}, LINK)["servings"] == expected
@@ -93,6 +98,19 @@ class TestToDraft:
 
 
 # ---- choosing a provider -------------------------------------------------------------------
+
+
+class TestRequestText:
+    def test_offers_the_household_tags_once_each_in_order(self):
+        text = request_text(LINK, ["soup", "meat", "soup", "", "chicken"])
+        assert text == f"Recipe page: {LINK}\nThe household's existing tags: chicken, meat, soup"
+
+    def test_a_new_household_gets_the_starter_tags(self):
+        assert request_text(LINK, []).endswith("existing tags: " + ", ".join(SUGGESTED_TAGS))
+
+    def test_caps_a_long_tag_list(self):
+        text = request_text(LINK, [f"t{n:03}" for n in range(80)])
+        assert text.count(",") == 49
 
 
 class TestProviders:
@@ -176,7 +194,7 @@ def claude(*replies):
 class TestClaudeAdapter:
     def test_asks_claude_to_fetch_the_page_and_answer_in_the_schema(self):
         extractor, sent = claude(message())
-        assert extractor.extract(LINK)["title"] == "Green bean soup"
+        assert extractor.extract(LINK, [])["title"] == "Green bean soup"
         assert len(sent) == 1
         body, headers = sent[0]["body"], sent[0]["headers"]
         assert sent[0]["path"] == "/v1/messages"
@@ -184,7 +202,7 @@ class TestClaudeAdapter:
         assert body["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": RECIPE_SCHEMA}}
         assert body["tools"] == [{"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 2, "max_content_tokens": 30000}]
         assert body["fallbacks"] == "default" and "server-side-fallback-2026-07-01" in headers["anthropic-beta"]
-        assert body["messages"] == [{"role": "user", "content": f"Recipe page: {LINK}"}]
+        assert body["messages"] == [{"role": "user", "content": request_text(LINK, [])}]
         assert "Translate from the page's language into English" in body["system"]
         assert "thinking" not in body and "temperature" not in body
 
@@ -195,18 +213,18 @@ class TestClaudeAdapter:
             {"type": "text", "text": json.dumps(SOUP)},
         ]
         extractor, _ = claude(message(content=fetched))
-        assert len(extractor.extract(LINK)["ingredients"]) == 3
+        assert len(extractor.extract(LINK, [])["ingredients"]) == 3
 
     def test_resumes_a_paused_turn(self):
         paused = message("pause_turn", [{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_fetch", "input": {"url": LINK}}])
         extractor, sent = claude(paused, message())
-        assert extractor.extract(LINK)["servings"] == 4
+        assert extractor.extract(LINK, [])["servings"] == 4
         assert [m["role"] for m in sent[1]["body"]["messages"]] == ["user", "assistant"]
 
     def test_gives_up_after_too_many_pauses(self):
         extractor, sent = claude(*[message("pause_turn", [])] * 3)
         with pytest.raises(ExtractionError, match="Couldn't finish reading that page"):
-            extractor.extract(LINK)
+            extractor.extract(LINK, [])
         assert len(sent) == 3
 
     @pytest.mark.parametrize(
@@ -222,7 +240,7 @@ class TestClaudeAdapter:
     def test_answers_that_are_not_a_recipe(self, reply, error):
         extractor, _ = claude(reply)
         with pytest.raises(ExtractionError, match=error):
-            extractor.extract(LINK)
+            extractor.extract(LINK, [])
 
     @pytest.mark.parametrize(
         "reply, error",
@@ -238,7 +256,40 @@ class TestClaudeAdapter:
     def test_api_errors_become_friendly_messages(self, reply, error):
         extractor, _ = claude(reply)
         with pytest.raises(ExtractionError, match=error):
-            extractor.extract(LINK)
+            extractor.extract(LINK, [])
 
     def test_module_constants(self):
         assert anthropic_provider.DEFAULT_MODEL == "claude-opus-5-5" and anthropic_provider.DEFAULT_EFFORT == "low"
+
+
+class TestCostLog:
+    def test_logs_tokens_and_cost_for_the_whole_import(self, caplog):
+        paused = message("pause_turn", [])
+        paused["usage"] = {"input_tokens": 2000, "output_tokens": 100, "cache_read_input_tokens": 1000}
+        done = message()
+        done["usage"] = {"input_tokens": 3000, "output_tokens": 600, "cache_creation_input_tokens": 400}
+        extractor, _ = claude(paused, done)
+        with caplog.at_level("INFO", logger="grubgrab"):
+            extractor.extract(LINK, ["soup"])
+        entry = json.loads(caplog.records[-1].getMessage())
+        assert {k: entry[k] for k in ("event", "model", "requests", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "stop")} == {
+            "event": "recipe_import",
+            "model": "claude-opus-5-5",
+            "requests": 2,
+            "input_tokens": 5000,
+            "output_tokens": 700,
+            "cache_read_tokens": 1000,
+            "cache_write_tokens": 400,
+            "stop": "end_turn",
+        }
+        # (5000 + 400 * 1.25) * $4 + 700 * $20 + 1000 * $0.20, per million tokens
+        assert entry["estimated_usd"] == round((5500 * 4 + 700 * 20 + 1000 * 0.2) / 1e6, 4)
+        assert LINK not in caplog.text  # no links or personal details in the log
+
+    def test_no_estimate_for_a_model_without_a_known_price(self, caplog):
+        extractor, _ = claude(message())
+        extractor.model = "claude-future-9"
+        with caplog.at_level("INFO", logger="grubgrab"):
+            extractor.extract(LINK, [])
+        entry = json.loads(caplog.records[-1].getMessage())
+        assert entry["model"] == "claude-future-9" and "estimated_usd" not in entry
