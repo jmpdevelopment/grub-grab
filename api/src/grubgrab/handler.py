@@ -12,7 +12,8 @@ from urllib.parse import urlparse
 import boto3
 
 from . import ai
-from .aggregate import aggregate, combine
+from .aggregate import aggregate, combine, normalise_name
+from .aisles import AISLES, MAX_REMEMBERED
 from .store import INVITE_LENGTH, Store, normalise_invite_code
 
 MAX_TEXT = 200
@@ -162,9 +163,10 @@ def _validate_recipe(data: dict) -> dict:
         name = _text(ing.get("name"), "Ingredient name")
         if not name:
             continue  # blank rows from the editor are dropped
-        ingredients.append(
-            {"name": name, "quantity": _quantity(ing.get("quantity")), "unit": _text(ing.get("unit"), "Unit")}
-        )
+        ingredient = {"name": name, "quantity": _quantity(ing.get("quantity")), "unit": _text(ing.get("unit"), "Unit")}
+        if ing.get("aisle") in AISLES:  # from "Fill from link"; anything else is dropped, not an error
+            ingredient["aisle"] = ing["aisle"]
+        ingredients.append(ingredient)
     return {
         "title": _text(data.get("title"), "Title", required=True),
         "servings": _servings(data.get("servings")),
@@ -214,6 +216,17 @@ def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
         raise ApiError(409, "list_too_long", f"That would make the list longer than {MAX_LIST_ITEMS} items", max=MAX_LIST_ITEMS)
     store.replace_items(hh, [i["id"] for i in remove], new_items)
     return store.list_items(hh)
+
+
+def _set_aisle(store: Store, hh: str, data: dict) -> dict:
+    """Someone moved an item to another aisle: put it there from now on, for the whole household."""
+    name = normalise_name(_text(data.get("name"), "Name", required=True))
+    aisle = data.get("aisle")
+    if aisle not in AISLES:
+        raise ApiError(400, "aisle_invalid", f"Unknown aisle {str(aisle)[:20]!r}")
+    if not store.set_aisle(hh, name, aisle):
+        raise ApiError(409, "aisle_limit", f"Your household already has {MAX_REMEMBERED} items moved to other aisles", max=MAX_REMEMBERED)
+    return _resp(200, store.get_household(hh))
 
 
 def _language(data: dict) -> str:
@@ -344,6 +357,8 @@ def route(event: dict, store: Store) -> dict:
 
     if route_key == "PUT /household/recipe-language":
         return _resp(200, store.set_recipe_language(hh, _language(_body(event))))
+    if route_key == "PUT /household/aisles":
+        return _set_aisle(store, hh, _body(event))
     if route_key == "POST /household/invite":
         return _resp(200, store.rotate_invite(hh))
 

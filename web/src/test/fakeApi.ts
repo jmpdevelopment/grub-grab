@@ -15,6 +15,7 @@ export interface ApiState {
     pendingRequests?: number
     language?: string
     recipeLanguage?: string
+    aisles?: Record<string, string>
   }
   requests: AccessRequest[]
 }
@@ -47,6 +48,11 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
     [`PUT ${API}/household/recipe-language`]: (_u, init) => {
       state.household = { ...state.household, recipeLanguage: body(init).language }
       return json({ householdId: state.household.householdId, inviteCode: state.household.inviteCode, recipeLanguage: body(init).language })
+    },
+    [`PUT ${API}/household/aisles`]: (_u, init) => {
+      const { name, aisle } = body(init)
+      state.household = { ...state.household, aisles: { ...state.household.aisles, [name.trim().toLowerCase()]: aisle } }
+      return json(state.household)
     },
     [`DELETE ${API}/me`]: () => {
       state.recipes = []

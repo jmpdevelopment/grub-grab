@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from ..aisles import AISLES
+
 RECIPE_INSTRUCTIONS = """\
 You read a recipe web page and turn it into a shopping-friendly recipe for a household recipe app.
 
@@ -28,6 +30,11 @@ Fetch the page at the link the user gives, then fill in the answer:
     is tbsp, "łyżeczka" or "šaukštelis" is tsp, a glass/"szklanka"/"stiklinė" is about 250 ml). Other units
     (cloves, cans, a pinch, a bunch) are short words in the requested language. Use "" for countable items
     ("2 onions" -> quantity 2, unit "").
+  - aisle: where a shopper finds it in a supermarket, one of: produce (fruit, vegetables, fresh herbs),
+    bakery (bread, rolls, wraps), meat (meat, poultry, fish, seafood, cold cuts), dairy (milk, butter, cream,
+    cheese, yoghurt, eggs), pantry (pasta, rice, grains, flour, sugar, tins, jars, nuts, stock, baking),
+    spices (salt, pepper, dried herbs and spices, oils, vinegar, sauces, condiments), frozen, drinks
+    (juice, wine, beer, coffee, tea), household (non-food), other (when none fits).
   - Do not invent ingredients that are not on the page, and skip equipment, garnish suggestions and
     serving ideas that are not part of the recipe.
 - tags: 1 to 4 short lower-case labels for finding the recipe later: its main ingredient (meat, chicken,
@@ -72,11 +79,12 @@ RECIPE_SCHEMA: dict = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["name", "quantity", "unit"],
+                "required": ["name", "quantity", "unit", "aisle"],
                 "properties": {
                     "name": {"type": "string"},
                     "quantity": {"anyOf": [{"type": "number"}, {"type": "null"}]},
                     "unit": {"type": "string"},
+                    "aisle": {"type": "string", "enum": list(AISLES)},
                 },
             },
         },
@@ -123,7 +131,8 @@ def to_draft(answer: dict, link: str) -> dict:
     for raw in answer.get("ingredients") or []:
         if not isinstance(raw, dict) or not _text(raw.get("name")):
             continue
-        ingredients.append({"name": _text(raw.get("name")), "quantity": _quantity(raw.get("quantity")), "unit": _text(raw.get("unit"), 20)})
+        aisle = raw.get("aisle") if raw.get("aisle") in AISLES else "other"
+        ingredients.append({"name": _text(raw.get("name")), "quantity": _quantity(raw.get("quantity")), "unit": _text(raw.get("unit"), 20), "aisle": aisle})
         if len(ingredients) == _MAX_INGREDIENTS:
             break
     if not ingredients:

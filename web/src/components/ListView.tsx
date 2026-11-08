@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useI18n } from '../i18n'
 import { formatQty, listAsText, parseIngredientLine } from '../lib/aggregate'
+import { AISLES, aisleOf, byAisle, type Aisle, type RememberedAisles } from '../lib/aisles'
 import type { ListItem } from '../types'
 import { LoadingCards } from './LoadingCards'
 
@@ -13,15 +14,22 @@ interface Props {
   onRefresh: () => void
   /** True until the first load has arrived: show placeholders, not "Your list is empty". */
   loading?: boolean
+  /** Where the household moved items before (see lib/aisles). */
+  remembered?: RememberedAisles
+  /** Move an item to another aisle (remembered for the household). */
+  onMove: (item: ListItem, aisle: Aisle) => void
 }
 
-export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh, loading = false }: Props) {
+export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh, onMove, remembered = {}, loading = false }: Props) {
   const { t } = useI18n()
   const [draft, setDraft] = useState('')
   const [toast, setToast] = useState<string | null>(null)
 
   const todo = items.filter((i) => !i.checked)
   const done = items.filter((i) => i.checked)
+  const aisles = byAisle(todo, remembered)
+  // A list where nothing has an aisle yet looks as it always did, without a lone "Other" heading.
+  const showAisles = !(aisles.length === 1 && aisles[0].aisle === 'other')
 
   const flash = (msg: string) => {
     setToast(msg)
@@ -37,7 +45,7 @@ export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh,
   }
 
   const copy = async () => {
-    const text = listAsText(items)
+    const text = listAsText(aisles.flatMap((group) => group.items)) // in walking order
     if (!text) return flash(t('list.nothingToBuy'))
     try {
       if (navigator.share && /Android|iPhone|iPad/i.test(navigator.userAgent)) {
@@ -61,6 +69,21 @@ export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh,
           {i.recipes.length > 0 && <span className="item-from">{i.recipes.join(', ')}</span>}
         </span>
       </label>
+      {!i.checked && (
+        // A native picker (works well on phones), shown as a small icon.
+        <span className="aisle-pick">
+          <span aria-hidden="true">⇅</span>
+          <select
+            aria-label={t('list.moveItem', { name: i.name })}
+            value={aisleOf(i, remembered)}
+            onChange={(e) => onMove(i, e.target.value as Aisle)}
+          >
+            {AISLES.map((a) => (
+              <option key={a} value={a}>{t(`aisle.${a}`)}</option>
+            ))}
+          </select>
+        </span>
+      )}
       <button className="icon" aria-label={t('list.removeItem', { name: i.name })} onClick={() => onDelete(i)}>×</button>
     </li>
   )
@@ -93,7 +116,16 @@ export function ListView({ items, onToggle, onAdd, onDelete, onClear, onRefresh,
               {t('list.toBuy', { count: todo.length })}
               {done.length ? ` · ${t('list.inBasketCount', { count: done.length })}` : ''}
             </p>
-            <ul className="items">{todo.map(row)}</ul>
+            {showAisles ? (
+              aisles.map((group) => (
+                <section key={group.aisle} className="aisle">
+                  <h3 className="aisle-head">{t(`aisle.${group.aisle}`)}</h3>
+                  <ul className="items">{group.items.map(row)}</ul>
+                </section>
+              ))
+            ) : (
+              <ul className="items">{todo.map(row)}</ul>
+            )}
             {done.length > 0 && (
               <>
                 <div className="section-head">

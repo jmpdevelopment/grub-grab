@@ -49,10 +49,10 @@ def pretty_unit(unit: str, quantity: Decimal | None) -> tuple[str, Decimal | Non
 
 
 def combine(entries: Iterable[dict]) -> list[dict]:
-    """Merge entries ({name, quantity, unit, recipes}) that share a name and unit family.
+    """Merge entries ({name, quantity, unit, recipes, aisle?}) that share a name and unit family.
 
     Known quantities are summed; an entry with no quantity ("salt") adds nothing to the total.
-    The first spelling of a name wins. Output is sorted by name.
+    The first spelling of a name wins, and the first aisle given. Output is sorted by name.
     """
     merged: dict[tuple[str, str], dict] = {}
     for entry in entries:
@@ -62,7 +62,8 @@ def combine(entries: Iterable[dict]) -> list[dict]:
         qty = entry.get("quantity")
         qty = None if qty is None else Decimal(str(qty))
         unit, qty = normalise_unit(entry.get("unit"), qty)
-        out = merged.setdefault((normalise_name(name), unit), {"name": name, "quantity": None, "unit": unit, "recipes": []})
+        out = merged.setdefault((normalise_name(name), unit), {"name": name, "quantity": None, "unit": unit, "recipes": [], "aisle": ""})
+        out["aisle"] = out["aisle"] or entry.get("aisle") or ""
         if qty is not None:
             out["quantity"] = (out["quantity"] or Decimal(0)) + qty
         for title in entry.get("recipes") or []:
@@ -72,7 +73,8 @@ def combine(entries: Iterable[dict]) -> list[dict]:
     result = []
     for out in merged.values():
         unit, qty = pretty_unit(out["unit"], out["quantity"])
-        result.append({**out, "unit": unit, "quantity": qty})
+        aisle = out.pop("aisle")
+        result.append({**out, "unit": unit, "quantity": qty, **({"aisle": aisle} if aisle else {})})
     return sorted(result, key=lambda i: normalise_name(i["name"]))
 
 

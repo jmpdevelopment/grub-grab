@@ -460,6 +460,7 @@ class GrubGrabStack(Stack):
             "/household/join": [apigw.HttpMethod.POST],
             "/household/invite": [apigw.HttpMethod.POST],
             "/household/recipe-language": [apigw.HttpMethod.PUT],
+            "/household/aisles": [apigw.HttpMethod.PUT],
             "/recipes": [apigw.HttpMethod.GET, apigw.HttpMethod.POST],
             "/recipes/import": [apigw.HttpMethod.POST],
             "/recipes/import/{id}": [apigw.HttpMethod.GET],

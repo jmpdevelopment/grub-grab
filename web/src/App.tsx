@@ -9,6 +9,7 @@ import { RecipesView } from './components/RecipesView'
 import { SettingsView } from './components/SettingsView'
 import { updateApp, watchForAppUpdates } from './lib/appUpdate'
 import { completeSignIn, currentEmail, forgetSession, getAccessToken, SignInNotice, signIn, signOut } from './lib/auth'
+import { aisleKey } from './lib/aisles'
 import { AuthRequiredError, CloudBackend, LocalBackend } from './lib/backend'
 import { loadConfig, type AppConfig } from './lib/config'
 import { I18nProvider, isLang, useI18n, type MessageKey } from './i18n'
@@ -258,6 +259,14 @@ function GrubGrab() {
             items={items}
             loading={loading}
             onRefresh={refresh}
+            remembered={household?.aisles}
+            onMove={async (item, aisle) => {
+              // Optimistic: regroup instantly, put it back if the request fails.
+              const before = household?.aisles
+              setHousehold((h) => ({ ...h!, aisles: { ...h!.aisles, [aisleKey(item.name)]: aisle } }))
+              const updated = await guard(() => b.setAisle(item.name, aisle))
+              setHousehold((h) => ({ ...h!, aisles: updated === FAILED ? before : updated.aisles }))
+            }}
             onToggle={async (item) => {
               // Optimistic: tick instantly, roll back if the request fails.
               setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, checked: !item.checked } : i)))

@@ -43,6 +43,7 @@ describe('CloudBackend', () => {
       [`PUT ${API}/household/recipe-language`]: ok({ householdId: 'h', inviteCode: 'ABC234', recipeLanguage: 'pl' }),
       [`POST ${API}/household/join`]: ok({ householdId: 'h2', inviteCode: 'XYZ234' }),
       [`POST ${API}/household/invite`]: ok({ householdId: 'h', inviteCode: 'NEWCODE234' }),
+      [`PUT ${API}/household/aisles`]: ok({ householdId: 'h', inviteCode: 'ABC234', aisles: { tahini: 'pantry' } }),
       [`GET ${API}/recipes`]: ok([]),
       [`POST ${API}/recipes`]: ok({ id: 'r1' }),
       [`PUT ${API}/recipes/r1`]: ok({ id: 'r1' }),
@@ -69,6 +70,7 @@ describe('CloudBackend', () => {
     expect((await b.setRecipeLanguage('pl')).recipeLanguage).toBe('pl')
     expect(await b.joinHousehold('xyz234')).toEqual({ householdId: 'h2', inviteCode: 'XYZ234' })
     expect(await b.rotateInvite()).toEqual({ householdId: 'h', inviteCode: 'NEWCODE234' })
+    expect((await b.setAisle('Tahini', 'pantry')).aisles).toEqual({ tahini: 'pantry' })
     await b.listRecipes()
     await b.createRecipe(PASTA)
     await b.updateRecipe('r1', CURRY)
@@ -95,6 +97,7 @@ describe('CloudBackend', () => {
       'PUT /household/recipe-language',
       'POST /household/join',
       'POST /household/invite',
+      'PUT /household/aisles',
       'GET /recipes',
       'POST /recipes',
       'PUT /recipes/r1',
@@ -117,6 +120,7 @@ describe('CloudBackend', () => {
     expect(body('POST /household').body).toEqual({ language: 'en' })
     expect(body('PATCH /me').body).toEqual({ language: 'lt' })
     expect(body('PUT /household/recipe-language').body).toEqual({ language: 'pl' })
+    expect(body('PUT /household/aisles').body).toEqual({ name: 'Tahini', aisle: 'pantry' }) // the server makes the key
     expect(body('POST /household/join').headers['content-type']).toBe('application/json')
   })
 
@@ -165,10 +169,11 @@ describe('LocalBackend', () => {
   it('has a fixed local household and cannot join others', async () => {
     const b = new LocalBackend()
     expect(b.mode).toBe('local')
-    expect(await b.me()).toEqual({ householdId: 'local', inviteCode: null })
-    expect(await b.createHousehold()).toEqual({ householdId: 'local', inviteCode: null })
+    const local = { householdId: 'local', inviteCode: null, aisles: {} }
+    expect(await b.me()).toEqual(local)
+    expect(await b.createHousehold()).toEqual(local)
     expect(await b.saveLanguage()).toBeUndefined()
-    expect(await b.setRecipeLanguage()).toEqual({ householdId: 'local', inviteCode: null })
+    expect(await b.setRecipeLanguage()).toEqual(local)
     await b.createRecipe({ title: 'Soup', servings: null, notes: '', ingredients: [] })
     await expect(b.importRecipe()).rejects.toThrow('Recipe import needs the cloud version')
     await b.deleteAccount() // local mode: wipes this device's data
@@ -178,6 +183,17 @@ describe('LocalBackend', () => {
     expect(await b.declineAllPending()).toBe(0)
     await expect(b.joinHousehold()).rejects.toThrow('Sharing needs the cloud version')
     await expect(b.rotateInvite()).rejects.toThrow('Sharing needs the cloud version')
+  })
+
+  it('remembers where items were moved, on this device', async () => {
+    const b = new LocalBackend()
+    expect((await b.setAisle('  Tahini ', 'pantry')).aisles).toEqual({ tahini: 'pantry' })
+    await b.setAisle('Leek', 'produce')
+    expect((await b.me()).aisles).toEqual({ tahini: 'pantry', leek: 'produce' })
+    for (const aisles of ['nope', [1], null]) {
+      localStorage.setItem('gg.local', JSON.stringify({ aisles }))
+      expect((await b.me()).aisles).toEqual({})
+    }
   })
 
   it('starts empty, and survives corrupt or unexpected storage', async () => {

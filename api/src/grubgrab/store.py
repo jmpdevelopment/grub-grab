@@ -5,9 +5,10 @@ Key layout:
   PK=USER#<sub>        SK=SETTINGS         -> language — the app language this person chose (any device)
   PK=USER#<sub>        SK=JOINS#<window>   -> attempts, expiresAt (TTL)  — join rate limit
   PK=INVITE#<code>     SK=INVITE           -> householdId
-  PK=HH#<id>           SK=META             -> inviteCode, createdAt, recipeLanguage (what imports write in)
+  PK=HH#<id>           SK=META             -> inviteCode, createdAt, recipeLanguage (what imports write in),
+                                              aisles ({item name: aisle} — where the household moved items)
   PK=HH#<id>           SK=RECIPE#<id>      -> title, servings, ingredients, notes
-  PK=HH#<id>           SK=ITEM#<id>        -> name, quantity, unit, checked, recipes
+  PK=HH#<id>           SK=ITEM#<id>        -> name, quantity, unit, checked, recipes, aisle (if known)
   PK=ACCESS            SK=REQ#<username>   -> email, name, status (pending/approved/declined), requestedAt
   PK=ACCESS            SK=NOTIFY           -> lastAt — at most one "new request" email per hour
   PK=HH#<id>           SK=AI#<yyyy-mm>     -> imports, expiresAt (TTL) — AI recipe imports this month
@@ -27,6 +28,8 @@ from typing import Callable
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
+
+from .aisles import MAX_REMEMBERED
 
 INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
 INVITE_LENGTH = 10  # 32^10 ≈ 1.1e15 codes (50 bits)
@@ -112,13 +115,48 @@ class Store:
             self.table.delete_item(Key={"PK": f"INVITE#{code}", "SK": "INVITE"})
             self.table.delete_item(Key=meta_key)
             return self.create_household(user_sub, recipe_language)
-        return {"householdId": household_id, "inviteCode": code, "recipeLanguage": recipe_language}
+        return {"householdId": household_id, "inviteCode": code, "recipeLanguage": recipe_language, "aisles": {}}
 
     def get_household(self, household_id: str) -> dict:
         key = {"PK": f"HH#{household_id}", "SK": "META"}
         meta = self.table.get_item(Key=key, ConsistentRead=True).get("Item") or {}
         # Households from before recipe languages existed were filled in English.
-        return {"householdId": household_id, "inviteCode": meta.get("inviteCode"), "recipeLanguage": meta.get("recipeLanguage", "en")}
+        return {
+            "householdId": household_id,
+            "inviteCode": meta.get("inviteCode"),
+            "recipeLanguage": meta.get("recipeLanguage", "en"),
+            "aisles": meta.get("aisles", {}),
+        }
+
+    def set_aisle(self, household_id: str, name: str, aisle: str) -> bool:
+        """Remember the aisle for an item name (one entry, so two people moving items don't undo each other).
+        False if the household already remembers MAX_REMEMBERED other names."""
+        key, names = {"PK": f"HH#{household_id}", "SK": "META"}, {"#a": "aisles"}
+        failed = self.table.meta.client.exceptions.ConditionalCheckFailedException
+        for _ in range(2):  # the second round covers someone else creating the map in between
+            try:
+                self.table.update_item(
+                    Key=key,
+                    UpdateExpression="SET #a.#n = :v",
+                    ConditionExpression="attribute_exists(#a) AND (size(#a) < :max OR attribute_exists(#a.#n))",
+                    ExpressionAttributeNames={**names, "#n": name},
+                    ExpressionAttributeValues={":v": aisle, ":max": MAX_REMEMBERED},
+                )
+                return True
+            except failed:
+                pass
+            try:  # the household's first one
+                self.table.update_item(
+                    Key=key,
+                    UpdateExpression="SET #a = :m",
+                    ConditionExpression="attribute_not_exists(#a)",
+                    ExpressionAttributeNames=names,
+                    ExpressionAttributeValues={":m": {name: aisle}},
+                )
+                return True
+            except failed:
+                pass
+        return False
 
     def set_recipe_language(self, household_id: str, language: str) -> dict:
         self.table.update_item(
@@ -418,6 +456,7 @@ class Store:
                         "unit": i["unit"] or "",
                         "checked": False,
                         "recipes": i["recipes"] or [],
+                        **({"aisle": i["aisle"]} if i.get("aisle") else {}),
                     }
                 )
 

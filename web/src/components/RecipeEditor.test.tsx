@@ -115,6 +115,20 @@ describe('RecipeEditor', () => {
     expect(screen.queryByPlaceholderText(/One per line/)).not.toBeInTheDocument()
   })
 
+  it('keeps the aisles imported ingredients came with', async () => {
+    const recipe = { ...PASTA, ingredients: [{ name: 'Spaghetti', quantity: 500, unit: 'g', aisle: 'pantry' }, { name: 'Salt', quantity: null, unit: '' }] }
+    const { user, onSave } = setup({ recipe })
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ingredients: [
+          { name: 'Spaghetti', quantity: 500, unit: 'g', aisle: 'pantry' },
+          { name: 'Salt', quantity: null, unit: '' },
+        ],
+      }),
+    )
+  })
+
   it('edits an existing recipe and removes rows', async () => {
     const { user, onSave } = setup({ recipe: PASTA, onDelete: vi.fn() })
     expect(screen.getByRole('heading', { name: 'Edit recipe' })).toBeInTheDocument()

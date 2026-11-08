@@ -18,8 +18,14 @@ interface Props {
   onImport?: (link: string) => Promise<ImportedRecipe>
 }
 
-type Row = { name: string; quantity: string; unit: string }
-const toRow = (i: Ingredient): Row => ({ name: i.name, quantity: i.quantity === null ? '' : String(i.quantity), unit: i.unit })
+// aisle isn't shown: it comes from "Fill from link" and is kept so the shopping list can group by it.
+type Row = { name: string; quantity: string; unit: string; aisle?: string }
+const toRow = (i: Ingredient): Row => ({
+  name: i.name,
+  quantity: i.quantity === null ? '' : String(i.quantity),
+  unit: i.unit,
+  ...(i.aisle ? { aisle: i.aisle } : {}),
+})
 const emptyRow = (): Row => ({ name: '', quantity: '', unit: '' })
 
 export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCancel, onImport, recipeLanguage }: Props) {
@@ -100,7 +106,7 @@ export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCance
       if (!r.name.trim()) continue
       const q = r.quantity.trim().replace(',', '.')
       if (q && Number.isNaN(Number(q))) return setError(t('editor.notANumber', { value: r.quantity, name: r.name }))
-      ingredients.push({ name: r.name.trim(), quantity: q ? Number(q) : null, unit: r.unit.trim() })
+      ingredients.push({ name: r.name.trim(), quantity: q ? Number(q) : null, unit: r.unit.trim(), ...(r.aisle ? { aisle: r.aisle } : {}) })
     }
     setBusy(true)
     setError(null)

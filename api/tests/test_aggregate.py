@@ -112,6 +112,15 @@ class TestAggregate:
         )
         assert out == [{"name": "Garlic", "quantity": Decimal(7), "unit": "cloves", "recipes": ["Pasta", "Curry"]}]
 
+    def test_items_keep_the_aisle_their_ingredients_came_with(self):
+        out = aggregate(
+            [
+                {"title": "Pasta", "ingredients": [{"name": "Garlic", "quantity": 3, "unit": "cloves"}, {"name": "Salt", "quantity": None, "unit": ""}]},
+                {"title": "Curry", "ingredients": [{"name": "garlic", "quantity": 4, "unit": "cloves", "aisle": "produce"}]},
+            ]
+        )
+        assert [(i["name"], i.get("aisle")) for i in out] == [("Garlic", "produce"), ("Salt", None)]
+
     def test_recipe_without_title_or_ingredients(self):
         assert aggregate([{"ingredients": [{"name": "Egg", "quantity": 2}]}, {"title": "Empty"}]) == [
             {"name": "Egg", "quantity": Decimal(2), "unit": "", "recipes": []}

@@ -92,7 +92,7 @@ class TestHouseholds:
     def test_parallel_first_request_uses_existing_household(self, table):
         Store(table).table.put_item(Item={"PK": "HH#theirs", "SK": "META", "inviteCode": "ZZZZZZ"})
         s = Store(LateProfileTable(table, "theirs"), codes("LOSERCODE2"))
-        assert s.create_household("alice") == {"householdId": "theirs", "inviteCode": "ZZZZZZ", "recipeLanguage": "en"}
+        assert s.create_household("alice") == {"householdId": "theirs", "inviteCode": "ZZZZZZ", "recipeLanguage": "en", "aisles": {}}
         # The losing request cleans up the household it built: no orphan META, and its code doesn't work.
         metas = [i for i in table.scan()["Items"] if i["SK"] == "META"]
         assert [m["PK"] for m in metas] == ["HH#theirs"]
@@ -120,7 +120,7 @@ class TestHouseholds:
         assert seen == [created] and created["inviteCode"] == "FRESHCODE2"
 
     def test_household_without_meta(self, store):
-        assert store.get_household("missing") == {"householdId": "missing", "inviteCode": None, "recipeLanguage": "en"}
+        assert store.get_household("missing") == {"householdId": "missing", "inviteCode": None, "recipeLanguage": "en", "aisles": {}}
 
     def test_join(self, store):
         hh = store.create_household("alice")
@@ -138,12 +138,68 @@ class TestHouseholds:
         assert store.join_household("bob", "NOPE00") is None
 
 
+class TestAisles:
+    def test_remembers_where_the_household_moved_items(self, store):
+        hh = store.create_household("alice")["householdId"]
+        assert store.set_aisle(hh, "pomidory", "produce") is True  # the household's first
+        assert store.set_aisle(hh, "tahini", "pantry") is True
+        assert store.set_aisle(hh, "pomidory", "pantry") is True  # moved again
+        assert store.get_household(hh)["aisles"] == {"pomidory": "pantry", "tahini": "pantry"}
+
+    def test_names_with_odd_characters(self, store):
+        hh = store.create_household("alice")["householdId"]
+        store.set_aisle(hh, "salt & pepper. (fine)", "spices")
+        store.set_aisle(hh, "#a.b", "other")
+        assert store.get_household(hh)["aisles"] == {"salt & pepper. (fine)": "spices", "#a.b": "other"}
+
+    def test_households_from_before_aisles(self, store):
+        hh = store.create_household("alice")["householdId"]
+        store.table.update_item(Key={"PK": f"HH#{hh}", "SK": "META"}, UpdateExpression="REMOVE aisles")
+        assert store.get_household(hh)["aisles"] == {}
+        assert store.set_aisle(hh, "kefir", "dairy") is True
+        assert store.get_household(hh)["aisles"] == {"kefir": "dairy"}
+
+    def test_a_limit_on_how_many(self, store, monkeypatch):
+        from grubgrab import store as store_module
+
+        monkeypatch.setattr(store_module, "MAX_REMEMBERED", 2)
+        hh = store.create_household("alice")["householdId"]
+        assert store.set_aisle(hh, "a", "other") and store.set_aisle(hh, "b", "other")
+        assert store.set_aisle(hh, "c", "other") is False
+        assert store.set_aisle(hh, "a", "dairy") is True  # moving a remembered one again is fine
+        assert store.get_household(hh)["aisles"] == {"a": "dairy", "b": "other"}
+
+    def test_two_people_moving_their_first_items_at_once(self, store):
+        hh = store.create_household("alice")["householdId"]
+        store.table.update_item(Key={"PK": f"HH#{hh}", "SK": "META"}, UpdateExpression="REMOVE aisles")
+        real_update = store.table.update_item
+        calls = []
+
+        class RacingTable:
+            """The other person's first move lands just before ours creates the map."""
+
+            meta = store.table.meta
+
+            def update_item(self, **kwargs):
+                calls.append(kwargs["UpdateExpression"])
+                if kwargs["UpdateExpression"] == "SET #a = :m" and len(calls) == 2:
+                    real_update(Key=kwargs["Key"], UpdateExpression="SET aisles = :m", ExpressionAttributeValues={":m": {"leek": "produce"}})
+                return real_update(**kwargs)
+
+            def __getattr__(self, name):
+                return getattr(store.table, name)
+
+        racing = Store(RacingTable())
+        assert racing.set_aisle(hh, "kefir", "dairy") is True
+        assert store.get_household(hh)["aisles"] == {"leek": "produce", "kefir": "dairy"}
+
+
 class TestRotateInvite:
     def test_new_code_works_and_old_one_stops(self, table):
         s = Store(table, codes("OLDOLDOLD2", "NEWNEWNEW2"))
         hh = s.create_household("alice")
         rotated = s.rotate_invite(hh["householdId"])
-        assert rotated == {"householdId": hh["householdId"], "inviteCode": "NEWNEWNEW2", "recipeLanguage": "en"}
+        assert rotated == {"householdId": hh["householdId"], "inviteCode": "NEWNEWNEW2", "recipeLanguage": "en", "aisles": {}}
         assert s.get_household(hh["householdId"])["inviteCode"] == "NEWNEWNEW2"
         assert s.join_household("bob", "OLDOLDOLD2") is None
         assert s.join_household("bob", "NEWNEWNEW2")["householdId"] == hh["householdId"]

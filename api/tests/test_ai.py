@@ -22,9 +22,9 @@ SOUP = {
     "title": "Green bean soup",
     "servings": 4,
     "ingredients": [
-        {"name": "potatoes", "quantity": 3, "unit": ""},
-        {"name": "garlic", "quantity": 2, "unit": "cloves"},
-        {"name": "dill", "quantity": None, "unit": ""},
+        {"name": "potatoes", "quantity": 3, "unit": "", "aisle": "produce"},
+        {"name": "garlic", "quantity": 2, "unit": "cloves", "aisle": "produce"},
+        {"name": "dill", "quantity": None, "unit": "", "aisle": "produce"},
     ],
 }
 
@@ -40,9 +40,9 @@ class TestToDraft:
             "link": LINK,
             "tags": [],
             "ingredients": [
-                {"name": "potatoes", "quantity": 3.0, "unit": ""},
-                {"name": "garlic", "quantity": 2.0, "unit": "cloves"},
-                {"name": "dill", "quantity": None, "unit": ""},
+                {"name": "potatoes", "quantity": 3.0, "unit": "", "aisle": "produce"},
+                {"name": "garlic", "quantity": 2.0, "unit": "cloves", "aisle": "produce"},
+                {"name": "dill", "quantity": None, "unit": "", "aisle": "produce"},
             ],
         }
 
@@ -62,8 +62,8 @@ class TestToDraft:
                 "title": "  " + "T" * 300,
                 "servings": True,
                 "ingredients": [
-                    {"name": " Flour ", "quantity": "0.3333333", "unit": " g " + "x" * 50},
-                    {"name": "Salt", "quantity": -1, "unit": None},
+                    {"name": " Flour ", "quantity": "0.3333333", "unit": " g " + "x" * 50, "aisle": "pantry"},
+                    {"name": "Salt", "quantity": -1, "unit": None, "aisle": "garden centre"},
                     {"name": "Sugar", "quantity": 10_000_000, "unit": ""},
                     {"name": "Eggs", "quantity": True, "unit": ""},
                     {"name": "Milk", "quantity": "lots", "unit": ""},
@@ -74,7 +74,8 @@ class TestToDraft:
             LINK,
         )
         assert len(draft["title"]) == 200 and draft["servings"] is None
-        assert draft["ingredients"][0] == {"name": "Flour", "quantity": 0.333, "unit": ("g " + "x" * 50)[:20]}
+        assert draft["ingredients"][0] == {"name": "Flour", "quantity": 0.333, "unit": ("g " + "x" * 50)[:20], "aisle": "pantry"}
+        assert [i["aisle"] for i in draft["ingredients"]] == ["pantry"] + ["other"] * 5  # unknown or missing
         assert [i["quantity"] for i in draft["ingredients"]] == [0.333, None, None, None, None, None]
         assert draft["ingredients"][1]["unit"] == ""
 
@@ -89,6 +90,11 @@ class TestToDraft:
     def test_untitled_and_capped(self):
         draft = to_draft({**SOUP, "title": "", "ingredients": [{"name": f"i{n}", "quantity": 1, "unit": ""} for n in range(250)]}, LINK)
         assert draft["title"] == "Untitled recipe" and len(draft["ingredients"]) == 200
+
+    def test_asks_for_each_ingredients_aisle_from_the_apps_list(self):
+        from grubgrab.aisles import AISLES
+
+        assert RECIPE_SCHEMA["properties"]["ingredients"]["items"]["properties"]["aisle"] == {"type": "string", "enum": list(AISLES)}
 
     def test_schema_is_strict(self):
         assert RECIPE_SCHEMA["additionalProperties"] is False

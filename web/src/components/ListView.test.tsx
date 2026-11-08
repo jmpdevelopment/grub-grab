@@ -18,15 +18,16 @@ const GARLIC = item('g', 'Garlic', { quantity: 7, unit: 'cloves', recipes: ['Pas
 const SALT = item('s', 'Salt')
 const RICE = item('r', 'Rice', { quantity: 1, unit: 'kg', checked: true })
 
-function setup(items: ListItem[], loading = false) {
+function setup(items: ListItem[], loading = false, remembered: Record<string, string> = {}) {
   const props = {
+    onMove: vi.fn(),
     onToggle: vi.fn(),
     onAdd: vi.fn().mockResolvedValue(undefined),
     onDelete: vi.fn(),
     onClear: vi.fn().mockResolvedValue(undefined),
     onRefresh: vi.fn(),
   }
-  render(<ListView items={items} loading={loading} {...props} />)
+  render(<ListView items={items} loading={loading} remembered={remembered} {...props} />)
   return { user: userEvent.setup(), ...props }
 }
 
@@ -40,6 +41,55 @@ function withShare(impl: (data: ShareData) => Promise<void>, ua = 'Mozilla/5.0 (
 
 afterEach(() => {
   delete (navigator as { share?: unknown }).share
+})
+
+describe('ListView aisles', () => {
+  const LEEK = item('l', 'Leek', { aisle: 'produce' })
+  const MILK = item('m', 'Milk', { aisle: 'dairy' })
+  const TAHINI = item('t', 'Tahini')
+  const headings = () => screen.queryAllByRole('heading', { level: 3 }).map((h) => h.textContent)
+  const names = (heading: string) =>
+    within(screen.getByRole('heading', { name: heading }).closest('section')!)
+      .getAllByRole('listitem')
+      .map((li) => li.querySelector('.item-name')!.textContent)
+
+  it('groups what is left to buy by aisle, in walking order', () => {
+    setup([MILK, TAHINI, LEEK, item('x', 'Kefir', { aisle: 'dairy' }), item('y', 'Odd', { aisle: 'garden' }), RICE])
+    expect(headings()).toEqual(['Fruit & veg', 'Dairy & eggs', 'Other', 'In the basket'])
+    expect(names('Dairy & eggs')).toEqual(['Milk', 'Kefir'])
+    expect(names('Other')).toEqual(['Tahini', 'Odd']) // no aisle, or one the app doesn't know
+  })
+
+  it('puts items where the household moved them before', () => {
+    setup([LEEK, TAHINI], false, { tahini: 'pantry', leek: 'nonsense' })
+    expect(headings()).toEqual(['Fruit & veg', 'Dry goods & tins'])
+  })
+
+  it('looks as before when nothing has an aisle yet', () => {
+    setup([SALT, TAHINI])
+    expect(headings()).toEqual([])
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+  })
+
+  it('moves an item to another aisle with a picker', async () => {
+    const { user, onMove } = setup([LEEK, RICE])
+    const picker = screen.getByRole('combobox', { name: 'Move Leek to another aisle' })
+    expect(picker).toHaveValue('produce')
+    expect(within(picker).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'Fruit & veg', 'Bread & bakery', 'Meat & fish', 'Dairy & eggs', 'Dry goods & tins', 'Spices, oils & sauces', 'Frozen',
+      'Drinks', 'Household', 'Other',
+    ])
+    await user.selectOptions(picker, 'pantry')
+    expect(onMove).toHaveBeenCalledWith(LEEK, 'pantry')
+    expect(screen.queryByRole('combobox', { name: 'Move Rice to another aisle' })).not.toBeInTheDocument() // already in the basket
+  })
+
+  it('shares the list in walking order', async () => {
+    const share = withShare(async () => {})
+    const { user } = setup([MILK, TAHINI, LEEK])
+    await user.click(screen.getByRole('button', { name: 'Share' }))
+    expect(share).toHaveBeenCalledWith({ title: 'Shopping list', text: '- Leek\n- Milk\n- Tahini' })
+  })
 })
 
 describe('ListView', () => {

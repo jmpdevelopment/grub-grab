@@ -32,9 +32,10 @@ export function prettyUnit(unit: string, qty: number | null): [string, number | 
 }
 
 export type Aggregated = Omit<ListItem, 'id' | 'checked'>
-type Entry = { name?: string | null; quantity?: number | null; unit?: string | null; recipes?: string[] }
+type Entry = { name?: string | null; quantity?: number | null; unit?: string | null; recipes?: string[]; aisle?: string }
 
-/** Merge entries sharing a name and unit family; known quantities are summed. Sorted by name. */
+/** Merge entries sharing a name and unit family; known quantities are summed, the first aisle given is kept.
+ * Sorted by name. */
 export function combine(entries: Entry[]): Aggregated[] {
   const merged = new Map<string, Aggregated>()
   for (const e of entries) {
@@ -44,6 +45,7 @@ export function combine(entries: Entry[]): Aggregated[] {
     const key = `${normaliseName(name)}|${unit}`
     const out = merged.get(key) ?? { name, quantity: null, unit, recipes: [] }
     if (qty !== null) out.quantity = (out.quantity ?? 0) + qty
+    if (!out.aisle && e.aisle) out.aisle = e.aisle
     for (const title of e.recipes ?? []) if (!out.recipes.includes(title)) out.recipes.push(title)
     merged.set(key, out)
   }

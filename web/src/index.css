@@ -230,3 +230,11 @@ body { overscroll-behavior-y: contain; } /* our pull replaces the browser's own 
   font: inherit; font-size: 0.95rem; color: var(--text); background: var(--card);
   border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; max-width: 100%;
 }
+
+/* ---- shopping list aisles ---- */
+.aisle-head { margin: 18px 0 8px; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.aisle:first-of-type .aisle-head { margin-top: 4px; }
+/* A native <select> laid invisibly over a small icon, so moving an item opens the phone's own picker. */
+.aisle-pick { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 44px; color: var(--muted); font-size: 1.1rem; }
+.aisle-pick select { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; font-size: 16px; }
+.aisle-pick:focus-within { outline: 2px solid var(--green); outline-offset: -4px; border-radius: 8px; }

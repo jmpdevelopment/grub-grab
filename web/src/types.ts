@@ -2,6 +2,8 @@ export interface Ingredient {
   name: string
   quantity: number | null
   unit: string
+  /** Shop aisle (see lib/aisles), from "Fill from link". Missing on ingredients typed by hand. */
+  aisle?: string
 }
 
 export interface Recipe {
@@ -31,6 +33,8 @@ export interface ListItem {
   unit: string
   checked: boolean
   recipes: string[]
+  /** Shop aisle the item's ingredient came with, if any (see lib/aisles). */
+  aisle?: string
 }
 
 export interface Household {
@@ -39,6 +43,8 @@ export interface Household {
   inviteCode: string | null
   /** What "Fill from link" writes in, for everyone in the household. */
   recipeLanguage?: string
+  /** Where the household moved list items: {item name: aisle}, applied from then on. */
+  aisles?: Record<string, string>
   /** This person's app language, saved on their account (absent until first saved). */
   language?: string
   /** Admins approve sign-up requests; only present for them. */
@@ -62,6 +68,8 @@ export interface Backend {
   setRecipeLanguage(language: string): Promise<Household>
   joinHousehold(code: string): Promise<Household>
   rotateInvite(): Promise<Household>
+  /** Put this item (by name) in another aisle, for the whole household from now on. */
+  setAisle(name: string, aisle: string): Promise<Household>
   importRecipe(link: string): Promise<ImportedRecipe>
   /** Permanently delete the account (cloud) or this device's data (local). */
   deleteAccount(): Promise<void>

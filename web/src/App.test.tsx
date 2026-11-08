@@ -643,12 +643,32 @@ describe('cloud mode', () => {
         expect(screen.getByText('Garlic')).toBeInTheDocument()
       })
 
+      it('moving an item to another aisle', async () => {
+        const user = await openList({ [`PUT ${CFG.apiUrl}household/aisles`]: fail() })
+        await user.selectOptions(screen.getByRole('combobox', { name: 'Move Garlic to another aisle' }), 'produce')
+        await screen.findByRole('alert')
+        expect(screen.queryByRole('heading', { name: 'Fruit & veg' })).not.toBeInTheDocument() // back where it was
+        expect(screen.getByRole('combobox', { name: 'Move Garlic to another aisle' })).toHaveValue('other')
+      })
+
       it('successful changes stick', async () => {
         const user = await openList({})
         await user.click(screen.getByText('Rice')) // untick
         await waitFor(() => expect(screen.getByText('2 to buy')).toBeInTheDocument())
         expect(screen.queryByRole('alert')).not.toBeInTheDocument()
       })
+    })
+
+    it('moves an item to another aisle, and the household remembers it', async () => {
+      const { state } = fakeApi({ items: [{ id: 'i1', name: 'Tahini', quantity: null, unit: '', checked: false, recipes: [] }, { id: 'i2', name: 'Leek', quantity: null, unit: '', checked: false, recipes: [], aisle: 'produce' }] })
+      const user = await renderApp()
+      await screen.findByText('No recipes yet.')
+      await user.click(tab(/List/))
+      expect(screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual(['Fruit & veg', 'Other'])
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Move Tahini to another aisle' }), 'pantry')
+      expect(screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual(['Fruit & veg', 'Dry goods & tins'])
+      await waitFor(() => expect(state.household.aisles).toEqual({ tahini: 'pantry' }))
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     })
 
     describe('syncing with the other phone', () => {

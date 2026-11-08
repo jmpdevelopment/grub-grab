@@ -1,6 +1,7 @@
 import { AppError } from '../i18n/errors'
 import type { AccessRequest, Backend, Household, ImportedRecipe, ListItem, Recipe, RecipeInput } from '../types'
 import { aggregate, combine } from './aggregate'
+import { aisleKey } from './aisles'
 import { getAccessToken } from './auth'
 import type { AppConfig } from './config'
 
@@ -58,6 +59,7 @@ export class CloudBackend implements Backend {
   setRecipeLanguage = (language: string) => this.req<Household>('PUT', '/household/recipe-language', { language })
   joinHousehold = (code: string) => this.req<Household>('POST', '/household/join', { code })
   rotateInvite = () => this.req<Household>('POST', '/household/invite')
+  setAisle = (name: string, aisle: string) => this.req<Household>('PUT', '/household/aisles', { name, aisle })
   /** Starts the AI import (a background job on the server), then checks on it until it's finished. */
   /** The server writes the recipe in the household's recipe language. */
   importRecipe = async (link: string): Promise<ImportedRecipe> => {
@@ -101,6 +103,7 @@ const KEY = 'gg.local'
 interface LocalData {
   recipes: Recipe[]
   items: ListItem[]
+  aisles: Record<string, string>
 }
 
 const uid = () => crypto.randomUUID().replace(/-/g, '')
@@ -120,6 +123,7 @@ export class LocalBackend implements Backend {
     return {
       recipes: Array.isArray(data?.recipes) ? data.recipes : [],
       items: Array.isArray(data?.items) ? data.items : [],
+      aisles: data?.aisles && typeof data.aisles === 'object' && !Array.isArray(data.aisles) ? data.aisles : {},
     }
   }
   private save(d: LocalData) {
@@ -127,7 +131,13 @@ export class LocalBackend implements Backend {
   }
 
   async me(): Promise<Household> {
-    return { householdId: 'local', inviteCode: null }
+    return { householdId: 'local', inviteCode: null, aisles: this.load().aisles }
+  }
+  async setAisle(name: string, aisle: string): Promise<Household> {
+    const d = this.load()
+    d.aisles[aisleKey(name)] = aisle
+    this.save(d)
+    return this.me()
   }
   async createHousehold(): Promise<Household> {
     return this.me() // this device is the household

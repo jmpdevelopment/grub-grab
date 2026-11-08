@@ -161,6 +161,32 @@ class TestLanguages:
         assert call(store, "GET /me", sub="carol")[1]["recipeLanguage"] == "pl"  # shared by the household
         assert call(store, "POST /household", sub="erin")[1]["recipeLanguage"] == "en"  # no language sent
 
+    def test_anyone_in_the_household_can_move_an_item_to_another_aisle(self, store):
+        started = call(store, "POST /household", sub="carol")[1]
+        call(store, "POST /household/join", sub="dan", body={"code": started["inviteCode"]})
+        status, changed = call(store, "PUT /household/aisles", sub="dan", body={"name": "  Tahini   Paste ", "aisle": "pantry"})
+        assert status == 200 and changed["aisles"] == {"tahini paste": "pantry"}  # by name, however it was typed
+        assert call(store, "GET /me", sub="carol")[1]["aisles"] == {"tahini paste": "pantry"}
+
+    @pytest.mark.parametrize(
+        "body, expected",
+        [
+            ({"name": "kefir", "aisle": "garden"}, (400, "Unknown aisle 'garden'")),
+            ({"name": "kefir"}, (400, "Unknown aisle 'None'")),
+            ({"aisle": "dairy"}, (400, "Name is required")),
+            ({"name": "x" * 201, "aisle": "dairy"}, (400, "Name is too long (max 200)")),
+        ],
+    )
+    def test_aisle_moves_are_checked(self, store, body, expected):
+        assert error(store, "PUT /household/aisles", body=body) == expected
+
+    def test_aisle_moves_are_capped(self, store, monkeypatch):
+        monkeypatch.setattr(store, "set_aisle", lambda hh, name, aisle: False)
+        assert error(store, "PUT /household/aisles", body={"name": "kefir", "aisle": "dairy"}) == (
+            409,
+            "Your household already has 500 items moved to other aisles",
+        )
+
     @pytest.mark.parametrize("body", [{}, {"language": "de"}, {"language": 5}])
     def test_only_languages_the_app_speaks(self, store, body):
         assert error(store, "PATCH /me", body=body)[0] == 400
@@ -313,6 +339,25 @@ class TestRecipes:
             {"name": "Butter", "quantity": None, "unit": ""},
             {"name": "Jam", "quantity": 1.5, "unit": ""},
         ]
+
+    def test_ingredients_keep_a_known_aisle_and_drop_anything_else(self, store):
+        r = create(
+            store,
+            {
+                "title": "Soup",
+                "ingredients": [
+                    {"name": "Leek", "aisle": "produce"},
+                    {"name": "Salt", "aisle": "garden centre"},
+                    {"name": "Stock", "aisle": 5},
+                ],
+            },
+        )
+        assert [i.get("aisle") for i in r["ingredients"]] == ["produce", None, None]
+
+    def test_aisles_follow_ingredients_onto_the_list(self, store):
+        soup = create(store, {"title": "Soup", "ingredients": [{"name": "Leek", "aisle": "produce"}, {"name": "Salt"}]})
+        _, items = call(store, "POST /list/generate", body={"recipeIds": [soup["id"]]})
+        assert [(i["name"], i.get("aisle")) for i in items] == [("Leek", "produce"), ("Salt", None)]
 
     def test_ingredients_null_is_empty(self, store):
         assert create(store, {"title": "Air", "ingredients": None})["ingredients"] == []

@@ -120,6 +120,15 @@ describe('aggregate', () => {
     ).toEqual([{ name: 'Garlic', quantity: 7, unit: 'cloves', recipes: ['Pasta', 'Curry'] }])
   })
 
+  it('keeps the first aisle an ingredient came with', () => {
+    const out = aggregate([
+      { title: 'Pasta', ingredients: [{ name: 'Garlic', quantity: 3, unit: 'cloves' }, { name: 'Salt', quantity: null, unit: '' }] },
+      { title: 'Curry', ingredients: [{ name: 'garlic', quantity: 4, unit: 'cloves', aisle: 'produce' }] },
+      { title: 'Soup', ingredients: [{ name: 'garlic', quantity: 1, unit: 'cloves', aisle: 'spices' }] },
+    ])
+    expect(out.map((i) => [i.name, i.aisle])).toEqual([['Garlic', 'produce'], ['Salt', undefined]])
+  })
+
   it('copes with untitled recipes and recipes without ingredients', () => {
     expect(aggregate([{ ingredients: [{ name: 'Egg', quantity: 2, unit: '' }] }, { title: 'Empty' }])).toEqual([
       { name: 'Egg', quantity: 2, unit: '', recipes: [] },
