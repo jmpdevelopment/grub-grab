@@ -1,22 +1,29 @@
 // Mirrors api/src/grubgrab/aggregate.py so local mode behaves like the cloud API.
 import type { Ingredient, ListItem } from '../types'
 
-const UNIT_ALIASES: Record<string, [string, number]> = {
-  g: ['g', 1], gram: ['g', 1], grams: ['g', 1], kg: ['g', 1000],
-  ml: ['ml', 1], l: ['ml', 1000], litre: ['ml', 1000], litres: ['ml', 1000], liter: ['ml', 1000], liters: ['ml', 1000],
-  tsp: ['tsp', 1], tbsp: ['tsp', 3],
-}
+const UNIT_ALIASES = new Map<string, [string, number]>([
+  ['g', ['g', 1]], ['gram', ['g', 1]], ['grams', ['g', 1]], ['kg', ['g', 1000]],
+  ['ml', ['ml', 1]], ['l', ['ml', 1000]], ['litre', ['ml', 1000]], ['litres', ['ml', 1000]],
+  ['liter', ['ml', 1000]], ['liters', ['ml', 1000]],
+  ['tsp', ['tsp', 1]], ['tbsp', ['tsp', 3]],
+])
+
+// Words the paste parser treats as units even though they don't convert.
+const COUNT_UNITS = new Set(['clove', 'cloves', 'cup', 'cups', 'tin', 'tins', 'can', 'cans', 'pinch', 'bunch', 'pack', 'packs'])
+
+/** Round away float noise (0.1 + 0.2) without losing real precision. */
+export const round = (n: number) => Math.round(n * 1000) / 1000
 
 export const normaliseName = (n: string) => n.trim().toLowerCase().split(/\s+/).join(' ')
 
-export function normaliseUnit(unit: string, qty: number | null): [string, number | null] {
-  const key = unit.trim().toLowerCase()
-  const alias = UNIT_ALIASES[key]
+export function normaliseUnit(unit: string | null | undefined, qty: number | null): [string, number | null] {
+  const key = (unit ?? '').trim().toLowerCase()
+  const alias = UNIT_ALIASES.get(key)
   if (alias) return [alias[0], qty === null ? null : qty * alias[1]]
   return [key, qty]
 }
 
-function pretty(unit: string, qty: number | null): [string, number | null] {
+export function prettyUnit(unit: string, qty: number | null): [string, number | null] {
   if (qty === null) return [unit, null]
   if (unit === 'g' && qty >= 1000) return ['kg', qty / 1000]
   if (unit === 'ml' && qty >= 1000) return ['l', qty / 1000]
@@ -24,53 +31,71 @@ function pretty(unit: string, qty: number | null): [string, number | null] {
   return [unit, qty]
 }
 
-const round = (n: number) => Math.round(n * 1000) / 1000
-
 export type Aggregated = Omit<ListItem, 'id' | 'checked'>
+type Entry = { name?: string | null; quantity?: number | null; unit?: string | null; recipes?: string[] }
 
-export function aggregate(recipes: { title?: string; ingredients: Ingredient[] }[]): Aggregated[] {
+/** Merge entries sharing a name and unit family; known quantities are summed. Sorted by name. */
+export function combine(entries: Entry[]): Aggregated[] {
   const merged = new Map<string, Aggregated>()
-  for (const r of recipes) {
-    for (const ing of r.ingredients) {
-      const name = ing.name.trim()
-      if (!name) continue
-      const [unit, qty] = normaliseUnit(ing.unit ?? '', ing.quantity)
-      const key = `${normaliseName(name)}|${unit}`
-      const entry = merged.get(key) ?? { name, quantity: null, unit, recipes: [] }
-      if (qty !== null) entry.quantity = (entry.quantity ?? 0) + qty
-      if (r.title && !entry.recipes.includes(r.title)) entry.recipes.push(r.title)
-      merged.set(key, entry)
-    }
+  for (const e of entries) {
+    const name = (e.name ?? '').trim()
+    if (!name) continue
+    const [unit, qty] = normaliseUnit(e.unit, e.quantity ?? null)
+    const key = `${normaliseName(name)}|${unit}`
+    const out = merged.get(key) ?? { name, quantity: null, unit, recipes: [] }
+    if (qty !== null) out.quantity = (out.quantity ?? 0) + qty
+    for (const title of e.recipes ?? []) if (!out.recipes.includes(title)) out.recipes.push(title)
+    merged.set(key, out)
   }
   return [...merged.values()]
-    .map((e) => {
-      const [unit, qty] = pretty(e.unit, e.quantity)
-      return { ...e, unit, quantity: qty === null ? null : round(qty) }
+    .map((out) => {
+      const [unit, qty] = prettyUnit(out.unit, out.quantity)
+      return { ...out, unit, quantity: qty === null ? null : round(qty) }
     })
     .sort((a, b) => normaliseName(a.name).localeCompare(normaliseName(b.name)))
 }
 
+/** Flatten recipes' ingredients (tagged with the recipe title) and combine them. */
+export function aggregate(recipes: { title?: string; ingredients?: Ingredient[] }[]): Aggregated[] {
+  return combine(
+    recipes.flatMap((r) => (r.ingredients ?? []).map((ing) => ({ ...ing, recipes: r.title ? [r.title] : [] }))),
+  )
+}
+
 export function formatQty(item: { quantity: number | null; unit: string }): string {
   if (item.quantity === null) return item.unit
-  const q = Number.isInteger(item.quantity) ? String(item.quantity) : String(round(item.quantity))
+  const q = String(round(item.quantity))
   return item.unit ? `${q} ${item.unit}` : q
 }
 
-/** Parse a pasted line like "500 g spaghetti", "2 onions", "1.5 tbsp olive oil", "salt". */
+function parseNumber(raw: string): number | null {
+  const mixed = raw.match(/^(\d+)\s+(\d+)\/(\d+)$/)
+  if (mixed) {
+    const [, whole, a, b] = mixed.map(Number)
+    return b === 0 ? null : whole + a / b
+  }
+  if (raw.includes('/')) {
+    const [a, b] = raw.split('/').map(Number)
+    return b === 0 ? null : a / b
+  }
+  return Number(raw.replace(',', '.'))
+}
+
+/** Parse a pasted line like "500 g spaghetti", "1 1/2 cups flour", "2 onions", "salt". */
 export function parseIngredientLine(line: string): Ingredient | null {
   const text = line.replace(/^[-*•\s]+/, '').trim()
   if (!text) return null
-  const m = text.match(/^(\d+(?:[.,]\d+)?|\d+\/\d+)\s*([a-zA-Z]+\b)?\s*(.*)$/)
+  const m = text.match(/^(\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:[.,]\d+)?)\s*([a-zA-Z]+\b)?\s*(.*)$/)
   if (!m) return { name: text, quantity: null, unit: '' }
-  let qty: number
-  if (m[1].includes('/')) {
-    const [a, b] = m[1].split('/').map(Number)
-    qty = a / b
-  } else qty = Number(m[1].replace(',', '.'))
+  const qty = parseNumber(m[1])
+  if (qty === null) return { name: text, quantity: null, unit: '' }
   const word = m[2] ?? ''
-  const known = word.toLowerCase() in UNIT_ALIASES || ['cloves', 'clove', 'cup', 'cups', 'tin', 'tins', 'can', 'cans', 'pinch', 'bunch', 'pack', 'packs'].includes(word.toLowerCase())
-  if (known) return { name: m[3].trim() || word, quantity: qty, unit: word.toLowerCase() }
-  return { name: `${word} ${m[3]}`.trim(), quantity: qty, unit: '' }
+  const rest = m[3].trim()
+  const isUnit = UNIT_ALIASES.has(word.toLowerCase()) || COUNT_UNITS.has(word.toLowerCase())
+  if (isUnit && rest) return { name: rest, quantity: qty, unit: word.toLowerCase() }
+  const name = `${word} ${rest}`.trim()
+  // A bare number ("4") isn't an ingredient; keep the text so nothing is lost.
+  return name ? { name, quantity: qty, unit: '' } : { name: text, quantity: null, unit: '' }
 }
 
 export function listAsText(items: ListItem[]): string {

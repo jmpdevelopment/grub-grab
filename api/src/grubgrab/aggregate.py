@@ -27,6 +27,7 @@ def normalise_name(name: str) -> str:
 
 
 def normalise_unit(unit: str | None, quantity: Decimal | None) -> tuple[str, Decimal | None]:
+    """Convert to a base unit (kg -> g, tbsp -> tsp). Unknown units are just lower-cased."""
     key = (unit or "").strip().lower()
     if key in _UNIT_ALIASES:
         base, factor = _UNIT_ALIASES[key]
@@ -34,8 +35,8 @@ def normalise_unit(unit: str | None, quantity: Decimal | None) -> tuple[str, Dec
     return key, quantity
 
 
-def _pretty(unit: str, quantity: Decimal | None) -> tuple[str, Decimal | None]:
-    """Scale base units back up when large (2500 g -> 2.5 kg)."""
+def pretty_unit(unit: str, quantity: Decimal | None) -> tuple[str, Decimal | None]:
+    """Scale base units back up for display (2500 g -> 2.5 kg, 6 tsp -> 2 tbsp)."""
     if quantity is None:
         return unit, None
     if unit == "g" and quantity >= 1000:
@@ -47,36 +48,38 @@ def _pretty(unit: str, quantity: Decimal | None) -> tuple[str, Decimal | None]:
     return unit, quantity
 
 
-def aggregate(recipes: Iterable[dict]) -> list[dict]:
-    """Merge ingredients by (name, unit). Quantities are summed where known.
+def combine(entries: Iterable[dict]) -> list[dict]:
+    """Merge entries ({name, quantity, unit, recipes}) that share a name and unit family.
 
-    Each returned item has: name, quantity (Decimal | None), unit, recipes (list of titles).
+    Known quantities are summed; an entry with no quantity ("salt") adds nothing to the total.
+    The first spelling of a name wins. Output is sorted by name.
     """
     merged: dict[tuple[str, str], dict] = {}
-    for recipe in recipes:
-        title = recipe.get("title", "")
-        for ing in recipe.get("ingredients", []):
-            raw_name = (ing.get("name") or "").strip()
-            if not raw_name:
-                continue
-            qty = ing.get("quantity")
-            qty = Decimal(str(qty)) if qty not in (None, "") else None
-            unit, qty = normalise_unit(ing.get("unit"), qty)
-            key = (normalise_name(raw_name), unit)
-            entry = merged.setdefault(
-                key,
-                {"name": raw_name, "quantity": None, "unit": unit, "recipes": [], "_unknown": False},
-            )
-            if qty is None:
-                entry["_unknown"] = True
-            else:
-                entry["quantity"] = (entry["quantity"] or Decimal(0)) + qty
-            if title and title not in entry["recipes"]:
-                entry["recipes"].append(title)
+    for entry in entries:
+        name = (entry.get("name") or "").strip()
+        if not name:
+            continue
+        qty = entry.get("quantity")
+        qty = None if qty is None else Decimal(str(qty))
+        unit, qty = normalise_unit(entry.get("unit"), qty)
+        out = merged.setdefault((normalise_name(name), unit), {"name": name, "quantity": None, "unit": unit, "recipes": []})
+        if qty is not None:
+            out["quantity"] = (out["quantity"] or Decimal(0)) + qty
+        for title in entry.get("recipes") or []:
+            if title not in out["recipes"]:
+                out["recipes"].append(title)
 
-    out = []
-    for entry in merged.values():
-        unit, qty = _pretty(entry["unit"], entry["quantity"])
-        out.append({"name": entry["name"], "quantity": qty, "unit": unit, "recipes": entry["recipes"]})
-    out.sort(key=lambda i: normalise_name(i["name"]))
-    return out
+    result = []
+    for out in merged.values():
+        unit, qty = pretty_unit(out["unit"], out["quantity"])
+        result.append({**out, "unit": unit, "quantity": qty})
+    return sorted(result, key=lambda i: normalise_name(i["name"]))
+
+
+def aggregate(recipes: Iterable[dict]) -> list[dict]:
+    """Flatten recipes' ingredients (tagged with the recipe title) and combine them."""
+    return combine(
+        {**ing, "recipes": [r["title"]] if r.get("title") else []}
+        for r in recipes
+        for ing in r.get("ingredients", [])
+    )

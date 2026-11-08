@@ -32,7 +32,8 @@ export function RecipeEditor({ recipe, onSave, onDelete, onCancel }: Props) {
     })
   }
 
-  const removeRow = (idx: number) => setRows((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== idx) : [emptyRow()]))
+  // Only named rows can be removed, and a blank row always trails them, so at least one row remains.
+  const removeRow = (idx: number) => setRows((prev) => prev.filter((_, i) => i !== idx))
 
   const applyPaste = () => {
     const parsed = paste.split('\n').map(parseIngredientLine).filter((x): x is Ingredient => x !== null)
@@ -117,9 +118,14 @@ export function RecipeEditor({ recipe, onSave, onDelete, onCancel }: Props) {
             className="btn danger"
             disabled={busy}
             onClick={async () => {
-              if (confirm(`Delete "${recipe?.title}"?`)) {
-                setBusy(true)
+              if (!confirm(`Delete "${title}"?`)) return
+              setBusy(true)
+              setError(null)
+              try {
                 await onDelete()
+              } catch (e) {
+                setError((e as Error).message)
+                setBusy(false)
               }
             }}
           >

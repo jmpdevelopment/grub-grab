@@ -11,7 +11,12 @@ import type { Backend, Household, ListItem, Recipe } from './types'
 type Tab = 'recipes' | 'list' | 'settings'
 type Boot = { state: 'loading' } | { state: 'signin'; cfg: AppConfig } | { state: 'ready'; backend: Backend; cfg: AppConfig | null }
 
-const POLL_MS = 8000
+export const POLL_MS = 8000
+
+/** Returned by `guard` when the call failed (distinct from a call that succeeds with no data). */
+const FAILED = Symbol('failed')
+
+const byTitle = (a: Recipe, b: Recipe) => a.title.localeCompare(b.title)
 
 export default function App() {
   const [boot, setBoot] = useState<Boot>({ state: 'loading' })
@@ -38,21 +43,22 @@ export default function App() {
   }, [])
 
   const backend = boot.state === 'ready' ? boot.backend : null
+  const cfg = boot.state === 'loading' ? null : boot.cfg
 
+  /** Run a backend call: clear the old error, show a new one, or send the user to sign in. */
   const guard = useCallback(
-    async <T,>(fn: () => Promise<T>): Promise<T | undefined> => {
+    async <T,>(fn: () => Promise<T>): Promise<T | typeof FAILED> => {
       try {
         setError(null)
         return await fn()
       } catch (e) {
-        if (e instanceof AuthRequiredError && boot.state === 'ready' && boot.cfg) {
-          setBoot({ state: 'signin', cfg: boot.cfg })
-          return
-        }
-        setError((e as Error).message)
+        // Only the cloud backend raises AuthRequiredError, and it only exists when cfg is set.
+        if (e instanceof AuthRequiredError) setBoot({ state: 'signin', cfg: cfg! })
+        else setError((e as Error).message)
+        return FAILED
       }
     },
-    [boot],
+    [cfg],
   )
 
   const refresh = useCallback(async () => {
@@ -72,7 +78,9 @@ export default function App() {
   // Keep the list in sync with the other phone while it's open.
   useEffect(() => {
     if (backend?.mode !== 'cloud' || tab !== 'list') return
-    const tick = () => document.visibilityState === 'visible' && backend.getList().then(setItems).catch(() => {})
+    const tick = () => {
+      if (document.visibilityState === 'visible') backend.getList().then(setItems, () => {})
+    }
     const id = setInterval(tick, POLL_MS)
     document.addEventListener('visibilitychange', tick)
     return () => {
@@ -91,7 +99,9 @@ export default function App() {
         <h1>Grub Grab</h1>
         <p className="muted">Recipes in, shopping list out.</p>
         {error && <p className="error">{error}</p>}
-        <button className="btn" onClick={() => signIn(boot.cfg)}>Sign in</button>
+        <button className="btn" onClick={() => signIn(boot.cfg)}>
+          Sign in
+        </button>
       </div>
     )
 
@@ -105,13 +115,13 @@ export default function App() {
         onCancel={() => setEditing(null)}
         onSave={async (input) => {
           const saved = recipe ? await b.updateRecipe(recipe.id, input) : await b.createRecipe(input)
-          setRecipes((prev) => [...prev.filter((r) => r.id !== saved.id), saved].sort((x, y) => x.title.localeCompare(y.title)))
+          setRecipes((prev) => [...prev.filter((r) => r.id !== saved.id), saved].sort(byTitle))
           setEditing(null)
         }}
         onDelete={
           recipe
             ? async () => {
-                await guard(() => b.deleteRecipe(recipe.id))
+                await b.deleteRecipe(recipe.id) // errors are shown by the editor
                 setRecipes((prev) => prev.filter((r) => r.id !== recipe.id))
                 setEditing(null)
               }
@@ -121,12 +131,14 @@ export default function App() {
     )
   }
 
+  const toBuy = items.filter((i) => !i.checked).length
+
   return (
     <div className="app">
       {error && (
-        <div className="banner" onClick={() => setError(null)}>
+        <button className="banner" role="alert" onClick={() => setError(null)}>
           {error}
-        </div>
+        </button>
       )}
       <main>
         {tab === 'recipes' && (
@@ -136,10 +148,9 @@ export default function App() {
             onOpen={(r) => setEditing(r ?? 'new')}
             onMakeList={async (ids, mode) => {
               const list = await guard(() => b.generateList(ids, mode))
-              if (list) {
-                setItems(list)
-                setTab('list')
-              }
+              if (list === FAILED) return
+              setItems(list)
+              setTab('list')
             }}
           />
         )}
@@ -149,20 +160,20 @@ export default function App() {
             onRefresh={refresh}
             onToggle={async (item) => {
               // Optimistic: tick instantly, roll back if the request fails.
-              setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, checked: !i.checked } : i)))
-              const ok = await guard(() => b.setChecked(item.id, !item.checked))
-              if (!ok) setItems((prev) => prev.map((i) => (i.id === item.id ? item : i)))
+              setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, checked: !item.checked } : i)))
+              if ((await guard(() => b.setChecked(item.id, !item.checked))) === FAILED)
+                setItems((prev) => prev.map((i) => (i.id === item.id ? item : i)))
             }}
             onAdd={async (input) => {
               const added = await guard(() => b.addItem(input))
-              if (added) setItems((prev) => [added, ...prev])
+              if (added !== FAILED) setItems((prev) => [added, ...prev])
             }}
             onDelete={async (item) => {
               setItems((prev) => prev.filter((i) => i.id !== item.id))
-              await guard(() => b.deleteItem(item.id))
+              if ((await guard(() => b.deleteItem(item.id))) === FAILED) setItems((prev) => [...prev, item])
             }}
             onClear={async (onlyChecked) => {
-              await guard(() => b.clearList(onlyChecked))
+              if ((await guard(() => b.clearList(onlyChecked))) === FAILED) return
               setItems((prev) => (onlyChecked ? prev.filter((i) => !i.checked) : []))
             }}
           />
@@ -172,7 +183,7 @@ export default function App() {
             mode={b.mode}
             household={household}
             email={currentEmail()}
-            onSignOut={() => boot.cfg && signOut(boot.cfg)}
+            onSignOut={() => signOut(cfg!)} // the button only exists in cloud mode, where cfg is set
             onJoin={async (code) => {
               setHousehold(await b.joinHousehold(code))
               await refresh()
@@ -186,7 +197,7 @@ export default function App() {
           <span aria-hidden>📖</span>Recipes
         </button>
         <button className={tab === 'list' ? 'active' : ''} onClick={() => setTab('list')}>
-          <span aria-hidden>🛒</span>List{items.some((i) => !i.checked) ? ` (${items.filter((i) => !i.checked).length})` : ''}
+          <span aria-hidden>🛒</span>List{toBuy ? ` (${toBuy})` : ''}
         </button>
         <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
           <span aria-hidden>⚙️</span>Settings

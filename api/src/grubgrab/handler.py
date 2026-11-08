@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from decimal import Decimal, InvalidOperation
 
-from .aggregate import aggregate, normalise_name, normalise_unit
+from .aggregate import aggregate, combine
 from .store import Store
+
+MAX_TEXT = 200
+MAX_NOTES = 10_000
+MAX_INGREDIENTS = 200
+MAX_RECIPES_PER_LIST = 50
+MAX_QUANTITY = Decimal(1_000_000)
 
 _store: Store | None = None
 
@@ -39,93 +47,129 @@ def _resp(status: int, body=None) -> dict:
     }
 
 
+# ---- input parsing -------------------------------------------------------------
+
+
 def _body(event: dict) -> dict:
     raw = event.get("body") or "{}"
-    if event.get("isBase64Encoded"):
-        import base64
-
-        raw = base64.b64decode(raw).decode()
     try:
+        if event.get("isBase64Encoded"):
+            raw = base64.b64decode(raw, validate=True).decode()
         data = json.loads(raw, parse_float=Decimal)
-    except json.JSONDecodeError as exc:
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ApiError(400, "Body must be JSON") from exc
     if not isinstance(data, dict):
         raise ApiError(400, "Body must be a JSON object")
     return data
 
 
+def _text(value, field: str, *, required: bool = False, max_len: int = MAX_TEXT) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ApiError(400, f"{field} must be text")
+    value = value.strip()
+    if required and not value:
+        raise ApiError(400, f"{field} is required")
+    if len(value) > max_len:
+        raise ApiError(400, f"{field} is too long (max {max_len})")
+    return value
+
+
 def _quantity(value) -> Decimal | None:
-    if value in (None, ""):
+    if value is None or value == "":
         return None
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal, str)):
+        raise ApiError(400, f"Invalid quantity: {value!r}")
     try:
-        q = Decimal(str(value))
+        q = Decimal(str(value).strip())
     except InvalidOperation as exc:
         raise ApiError(400, f"Invalid quantity: {value!r}") from exc
-    if q < 0:
-        raise ApiError(400, "Quantity cannot be negative")
+    if not q.is_finite() or q < 0 or q > MAX_QUANTITY:
+        raise ApiError(400, f"Invalid quantity: {value!r}")
     return q
 
 
+def _servings(value) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal)) or value != int(value) or not 1 <= value <= 1000:
+        raise ApiError(400, "Servings must be a whole number from 1 to 1000")
+    return int(value)
+
+
 def _validate_recipe(data: dict) -> dict:
-    title = (data.get("title") or "").strip()
-    if not title:
-        raise ApiError(400, "Recipe needs a title")
+    raw_ingredients = data.get("ingredients") or []
+    if not isinstance(raw_ingredients, list):
+        raise ApiError(400, "Ingredients must be a list")
+    if len(raw_ingredients) > MAX_INGREDIENTS:
+        raise ApiError(400, f"Too many ingredients (max {MAX_INGREDIENTS})")
     ingredients = []
-    for ing in data.get("ingredients") or []:
-        name = (ing.get("name") or "").strip()
+    for ing in raw_ingredients:
+        if not isinstance(ing, dict):
+            raise ApiError(400, "Each ingredient must be an object")
+        name = _text(ing.get("name"), "Ingredient name")
         if not name:
-            continue
-        ingredients.append({"name": name, "quantity": _quantity(ing.get("quantity")), "unit": (ing.get("unit") or "").strip()})
-    servings = data.get("servings")
+            continue  # blank rows from the editor are dropped
+        ingredients.append(
+            {"name": name, "quantity": _quantity(ing.get("quantity")), "unit": _text(ing.get("unit"), "Unit")}
+        )
     return {
-        "title": title,
-        "servings": int(servings) if servings not in (None, "") else None,
-        "notes": (data.get("notes") or "").strip(),
+        "title": _text(data.get("title"), "Title", required=True),
+        "servings": _servings(data.get("servings")),
+        "notes": _text(data.get("notes"), "Notes", max_len=MAX_NOTES),
         "ingredients": ingredients,
     }
 
 
-def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
-    recipe_ids = data.get("recipeIds") or []
-    if not recipe_ids:
+def _recipe_ids(data: dict) -> list[str]:
+    ids = data.get("recipeIds")
+    if not isinstance(ids, list) or not ids:
         raise ApiError(400, "Pick at least one recipe")
+    if not all(isinstance(i, str) and i for i in ids):
+        raise ApiError(400, "Recipe ids must be text")
+    if len(ids) > MAX_RECIPES_PER_LIST:
+        raise ApiError(400, f"Too many recipes (max {MAX_RECIPES_PER_LIST})")
+    return list(dict.fromkeys(ids))  # ignore duplicates
+
+
+# ---- operations ------------------------------------------------------------------
+
+
+def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
+    mode = data.get("mode", "replace")
+    if mode not in ("replace", "append"):
+        raise ApiError(400, "Mode must be 'replace' or 'append'")
     recipes = []
-    for rid in recipe_ids:
+    for rid in _recipe_ids(data):
         recipe = store.get_recipe(hh, rid)
         if recipe is None:
             raise ApiError(404, f"Recipe {rid} not found")
         recipes.append(recipe)
 
-    if data.get("mode", "replace") == "replace":
+    if mode == "replace":
         store.clear_items(hh)
-        existing = []
+        new_items = aggregate(recipes)
     else:
-        existing = [i for i in store.list_items(hh) if not i.get("checked")]
+        # Fold the new ingredients into what's still unticked; ticked items are left alone.
+        unticked = [i for i in store.list_items(hh) if not i.get("checked")]
+        new_items = combine(unticked + aggregate(recipes))
+        for item in unticked:
+            store.delete_item(hh, item["id"])
 
-    for new in aggregate(recipes):
-        match = None
-        for old in existing:
-            old_unit, old_qty = normalise_unit(old.get("unit"), old.get("quantity"))
-            new_unit, new_qty = normalise_unit(new["unit"], new["quantity"])
-            if normalise_name(old["name"]) == normalise_name(new["name"]) and old_unit == new_unit:
-                match = (old, old_qty, new_qty)
-                break
-        if match:
-            old, old_qty, new_qty = match
-            store.delete_item(hh, old["id"])
-            merged_recipes = list(dict.fromkeys((old.get("recipes") or []) + new["recipes"]))
-            total = None if old_qty is None and new_qty is None else (old_qty or 0) + (new_qty or 0)
-            base_unit = normalise_unit(new["unit"], None)[0]
-            # Run the total back through aggregate so units are displayed consistently (e.g. 1500 g -> 1.5 kg).
-            pretty = aggregate([{"ingredients": [{"name": new["name"], "quantity": total, "unit": base_unit}]}])[0]
-            store.add_item(hh, pretty["name"], pretty["quantity"], pretty["unit"], merged_recipes)
-        else:
-            store.add_item(hh, new["name"], new["quantity"], new["unit"], new["recipes"])
+    for item in new_items:
+        store.add_item(hh, item["name"], item["quantity"], item["unit"], item["recipes"])
     return store.list_items(hh)
 
 
+def _require(found, what: str):
+    if not found:
+        raise ApiError(404, f"{what} not found")
+    return found
+
+
 def route(event: dict, store: Store) -> dict:
-    claims = (event.get("requestContext", {}).get("authorizer", {}).get("jwt", {}) or {}).get("claims", {})
+    claims = ((event.get("requestContext") or {}).get("authorizer") or {}).get("jwt", {}).get("claims", {})
     sub = claims.get("sub")
     if not sub:
         raise ApiError(401, "Not signed in")
@@ -136,10 +180,8 @@ def route(event: dict, store: Store) -> dict:
     if route_key == "GET /me":
         return _resp(200, store.get_or_create_household(sub))
     if route_key == "POST /household/join":
-        joined = store.join_household(sub, _body(event).get("code") or "")
-        if not joined:
-            raise ApiError(404, "That invite code doesn't exist")
-        return _resp(200, joined)
+        code = _text(_body(event).get("code"), "Code", required=True, max_len=20)
+        return _resp(200, _require(store.join_household(sub, code), "Invite code"))
 
     hh = store.household_for(sub)
 
@@ -148,14 +190,11 @@ def route(event: dict, store: Store) -> dict:
     if route_key == "POST /recipes":
         return _resp(201, store.put_recipe(hh, _validate_recipe(_body(event))))
     if route_key == "GET /recipes/{id}":
-        recipe = store.get_recipe(hh, params["id"])
-        if not recipe:
-            raise ApiError(404, "Recipe not found")
-        return _resp(200, recipe)
+        return _resp(200, _require(store.get_recipe(hh, params["id"]), "Recipe"))
     if route_key == "PUT /recipes/{id}":
-        if not store.get_recipe(hh, params["id"]):
-            raise ApiError(404, "Recipe not found")
-        return _resp(200, store.put_recipe(hh, _validate_recipe(_body(event)), params["id"]))
+        recipe = _validate_recipe(_body(event))
+        _require(store.get_recipe(hh, params["id"]), "Recipe")
+        return _resp(200, store.put_recipe(hh, recipe, params["id"]))
     if route_key == "DELETE /recipes/{id}":
         store.delete_recipe(hh, params["id"])
         return _resp(204)
@@ -166,15 +205,13 @@ def route(event: dict, store: Store) -> dict:
         return _resp(200, _generate_list(store, hh, _body(event)))
     if route_key == "POST /list/items":
         data = _body(event)
-        name = (data.get("name") or "").strip()
-        if not name:
-            raise ApiError(400, "Item needs a name")
-        return _resp(201, store.add_item(hh, name, _quantity(data.get("quantity")), (data.get("unit") or "").strip()))
+        name = _text(data.get("name"), "Name", required=True)
+        return _resp(201, store.add_item(hh, name, _quantity(data.get("quantity")), _text(data.get("unit"), "Unit")))
     if route_key == "PATCH /list/items/{id}":
-        item = store.set_checked(hh, params["id"], bool(_body(event).get("checked")))
-        if not item:
-            raise ApiError(404, "Item not found")
-        return _resp(200, item)
+        checked = _body(event).get("checked")
+        if not isinstance(checked, bool):
+            raise ApiError(400, "checked must be true or false")
+        return _resp(200, _require(store.set_checked(hh, params["id"], checked), "Item"))
     if route_key == "DELETE /list/items/{id}":
         store.delete_item(hh, params["id"])
         return _resp(204)

@@ -1,5 +1,5 @@
 import type { Backend, Household, ListItem, Recipe, RecipeInput } from '../types'
-import { aggregate, normaliseName, normaliseUnit } from './aggregate'
+import { aggregate, combine } from './aggregate'
 import { getAccessToken } from './auth'
 import type { AppConfig } from './config'
 
@@ -64,10 +64,15 @@ export class LocalBackend implements Backend {
   readonly mode = 'local' as const
 
   private load(): LocalData {
+    let data: Partial<LocalData> | null = null
     try {
-      return JSON.parse(localStorage.getItem(KEY) ?? '') as LocalData
+      data = JSON.parse(localStorage.getItem(KEY) ?? 'null')
     } catch {
-      return { recipes: [], items: [] }
+      // Corrupt storage: start fresh rather than crash.
+    }
+    return {
+      recipes: Array.isArray(data?.recipes) ? data.recipes : [],
+      items: Array.isArray(data?.items) ? data.items : [],
     }
   }
   private save(d: LocalData) {
@@ -106,28 +111,20 @@ export class LocalBackend implements Backend {
     return sortItems(this.load().items)
   }
   async generateList(recipeIds: string[], mode: 'replace' | 'append') {
+    if (recipeIds.length === 0) throw new Error('Pick at least one recipe')
     const d = this.load()
-    const recipes = d.recipes.filter((r) => recipeIds.includes(r.id))
-    let items = mode === 'replace' ? [] : d.items
-    for (const n of aggregate(recipes)) {
-      const [nu] = normaliseUnit(n.unit, null)
-      const existing = items.find(
-        (o) => !o.checked && normaliseName(o.name) === normaliseName(n.name) && normaliseUnit(o.unit, null)[0] === nu,
-      )
-      if (existing) {
-        const [, oq] = normaliseUnit(existing.unit, existing.quantity)
-        const [, nq] = normaliseUnit(n.unit, n.quantity)
-        const total = oq === null && nq === null ? null : (oq ?? 0) + (nq ?? 0)
-        const [merged] = aggregate([{ ingredients: [{ name: n.name, quantity: total, unit: nu }] }])
-        items = items.filter((i) => i !== existing)
-        items.push({ ...merged, id: uid(), checked: false, recipes: [...new Set([...existing.recipes, ...n.recipes])] })
-      } else {
-        items.push({ ...n, id: uid(), checked: false })
-      }
-    }
-    d.items = items
+    const recipes = [...new Set(recipeIds)].map((id) => {
+      const recipe = d.recipes.find((r) => r.id === id)
+      if (!recipe) throw new Error(`Recipe ${id} not found`)
+      return recipe
+    })
+    // Same rules as the API: replace drops everything; append folds into unticked items only.
+    const ticked = mode === 'append' ? d.items.filter((i) => i.checked) : []
+    const unticked = mode === 'append' ? d.items.filter((i) => !i.checked) : []
+    const fresh = combine([...unticked, ...aggregate(recipes)]).map((i) => ({ ...i, id: uid(), checked: false }))
+    d.items = [...ticked, ...fresh]
     this.save(d)
-    return sortItems(items)
+    return sortItems(d.items)
   }
   async addItem(item: Pick<ListItem, 'name' | 'quantity' | 'unit'>) {
     const d = this.load()

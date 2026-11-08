@@ -15,11 +15,13 @@ import secrets
 import time
 import uuid
 from decimal import Decimal
+from typing import Callable
 
 import boto3
 from boto3.dynamodb.conditions import Key
 
 _INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
+_INVITE_ATTEMPTS = 5
 
 
 def _now() -> int:
@@ -30,27 +32,45 @@ def _strip_keys(item: dict) -> dict:
     return {k: v for k, v in item.items() if k not in ("PK", "SK")}
 
 
+def random_invite_code() -> str:
+    return "".join(secrets.choice(_INVITE_ALPHABET) for _ in range(6))
+
+
 class Store:
-    def __init__(self, table=None):
+    def __init__(self, table=None, new_invite_code: Callable[[], str] = random_invite_code):
         if table is None:
             table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
         self.table = table
+        self._new_invite_code = new_invite_code
 
     # ---- households -------------------------------------------------------
 
-    def _new_invite_code(self) -> str:
-        return "".join(secrets.choice(_INVITE_ALPHABET) for _ in range(6))
+    def _put_if_absent(self, item: dict) -> bool:
+        try:
+            self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
+            return True
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    def _claim_invite_code(self, household_id: str) -> str:
+        for _ in range(_INVITE_ATTEMPTS):
+            code = self._new_invite_code()
+            if self._put_if_absent({"PK": f"INVITE#{code}", "SK": "INVITE", "householdId": household_id}):
+                return code
+        raise RuntimeError("Could not allocate a unique invite code")
 
     def get_or_create_household(self, user_sub: str) -> dict:
-        profile = self.table.get_item(Key={"PK": f"USER#{user_sub}", "SK": "PROFILE"}).get("Item")
+        key = {"PK": f"USER#{user_sub}", "SK": "PROFILE"}
+        profile = self.table.get_item(Key=key, ConsistentRead=True).get("Item")
         if profile:
             return self.get_household(profile["householdId"])
 
         household_id = uuid.uuid4().hex
-        code = self._new_invite_code()
+        # Claim the user first: if a parallel first request already did, use its household.
+        if not self._put_if_absent({**key, "householdId": household_id}):
+            return self.get_or_create_household(user_sub)
+        code = self._claim_invite_code(household_id)
         self.table.put_item(Item={"PK": f"HH#{household_id}", "SK": "META", "inviteCode": code, "createdAt": _now()})
-        self.table.put_item(Item={"PK": f"INVITE#{code}", "SK": "INVITE", "householdId": household_id})
-        self.table.put_item(Item={"PK": f"USER#{user_sub}", "SK": "PROFILE", "householdId": household_id})
         return {"householdId": household_id, "inviteCode": code}
 
     def get_household(self, household_id: str) -> dict:
