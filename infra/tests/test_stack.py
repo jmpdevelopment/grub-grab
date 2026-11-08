@@ -544,6 +544,7 @@ def test_ai_import_runs_in_a_background_worker_that_alone_holds_the_key(context,
 
     # Room for a slow page, but bounded: two at a time, and a failure is never retried (it would bill twice).
     assert worker["Timeout"] == 240 and worker["ReservedConcurrentExecutions"] == 2
+    assert worker["MemorySize"] == 1024  # CPU for loading the AI library quickly
     invoke_config = only(t, "AWS::Lambda::EventInvokeConfig")
     assert invoke_config["MaximumRetryAttempts"] == 0 and refs(invoke_config["FunctionName"]) == {worker_id}
     t.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "GET /recipes/import/{id}", "AuthorizationType": "JWT"})

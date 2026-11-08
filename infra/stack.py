@@ -321,7 +321,9 @@ class GrubGrabStack(Stack):
                 architecture=lambda_.Architecture.ARM_64,
                 handler="grubgrab.import_worker.lambda_handler",
                 code=code,
-                memory_size=256,
+                # Lambda's CPU grows with memory. Loading the AI library in a fresh container is CPU-bound and
+                # took ~25 s at 256 MB; it uses under 200 MB, so this buys speed (the cost is cents a month).
+                memory_size=1024,
                 timeout=IMPORT_WORKER_TIMEOUT,
                 reserved_concurrent_executions=IMPORT_WORKER_MAX_CONCURRENCY,
                 retry_attempts=0,  # a failed import is recorded, never re-run (it would call the AI and bill again)
