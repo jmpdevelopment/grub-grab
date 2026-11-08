@@ -543,7 +543,7 @@ def test_ai_import_runs_in_a_background_worker_that_alone_holds_the_key(context,
     assert "secretsmanager" not in json.dumps(policy_actions(t, "SignupFnServiceRole"))
 
     # Room for a slow page, but bounded: two at a time, and a failure is never retried (it would bill twice).
-    assert worker["Timeout"] == 200 and worker["ReservedConcurrentExecutions"] == 2
+    assert worker["Timeout"] == 240 and worker["ReservedConcurrentExecutions"] == 2
     invoke_config = only(t, "AWS::Lambda::EventInvokeConfig")
     assert invoke_config["MaximumRetryAttempts"] == 0 and refs(invoke_config["FunctionName"]) == {worker_id}
     t.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "GET /recipes/import/{id}", "AuthorizationType": "JWT"})
@@ -580,7 +580,7 @@ def test_ai_provider_settings_are_checked(context, message):
 
 
 def test_pip_bundling(tmp_path):
-    from stack import API_REQUIREMENTS, PipBundling
+    from stack import API_LOCK, PipBundling
 
     commands = []
 
@@ -590,9 +590,10 @@ def test_pip_bundling(tmp_path):
 
     assert PipBundling(run=ok).try_bundle(str(tmp_path)) is True
     command = commands[0]
-    assert command[1:4] == ["-m", "pip", "install"] and str(API_REQUIREMENTS) in command
-    for flag in ["--platform", "manylinux2014_aarch64", "--python-version", "3.13", "--only-binary=:all:", str(tmp_path)]:
+    assert command[1:4] == ["-m", "pip", "install"] and str(API_LOCK) in command
+    for flag in ["--require-hashes", "--no-deps", "--platform", "manylinux2014_aarch64", "--python-version", "3.13", "--only-binary=:all:", str(tmp_path)]:
         assert flag in command
+    assert "--upgrade" not in command  # exactly the locked versions, never "whatever is newest today"
     assert (tmp_path / "grubgrab" / "handler.py").exists() and (tmp_path / "grubgrab" / "ai" / "recipe.py").exists()
     assert not list(tmp_path.rglob("__pycache__"))
 
@@ -604,6 +605,18 @@ def test_requirements_pin_the_sdk_major():
     from stack import API_REQUIREMENTS
 
     assert "anthropic>=2.6,<3" in API_REQUIREMENTS.read_text()
+
+
+def test_the_lock_pins_every_package_with_a_checksum():
+    """Lambda gets exactly these: each one pinned (==) with its SHA-256, and the SDK among them."""
+    import re
+
+    from stack import API_LOCK
+
+    text = API_LOCK.read_text()
+    pins = re.findall(r"^([a-z0-9-]+)==([^\s]+) \\\n    --hash=sha256:([0-9a-f]{64})$", text, re.M)
+    assert len(pins) == text.count("==") >= 10
+    assert any(name == "anthropic" and version.startswith("2.") for name, version, _ in pins)
 
 
 # ---- extra domains that redirect to the site ------------------------------------------------------

@@ -9,7 +9,7 @@ import { RecipeEditor } from './components/RecipeEditor'
 import { RecipesView } from './components/RecipesView'
 import { SettingsView } from './components/SettingsView'
 import { updateApp, watchForAppUpdates } from './lib/appUpdate'
-import { completeSignIn, currentEmail, forgetSession, getAccessToken, SignInNotice, signIn, signOut } from './lib/auth'
+import { completeSignIn, currentEmail, forgetSession, getAccessToken, hasSession, SignInNotice, signIn, signOut } from './lib/auth'
 import { aisleKey } from './lib/aisles'
 import { AuthRequiredError, CloudBackend, LocalBackend } from './lib/backend'
 import { loadConfig, type AppConfig } from './lib/config'
@@ -71,7 +71,10 @@ function GrubGrab() {
         if (e instanceof SignInNotice) setNotice(e.key)
         else setError(e)
       }
-      if (!(await getAccessToken(cfg))) return setBoot({ state: 'signin', cfg })
+      // Offline with an expired token: open the app anyway (requests show "no connection" until the
+      // signal is back) rather than asking to sign in, which needs a connection too.
+      const signedIn = await getAccessToken(cfg).then(Boolean, hasSession)
+      if (!signedIn) return setBoot({ state: 'signin', cfg })
       setBoot({ state: 'ready', backend: new CloudBackend(cfg), cfg })
     })()
   }, [])

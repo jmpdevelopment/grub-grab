@@ -289,7 +289,8 @@ describe('languages', () => {
       { recipes: [PASTA] },
       { [`POST ${CFG.apiUrl}household/join`]: () => json({ error: 'Invite code not found', code: 'invite_code_not_found' }, 404) },
     )
-    const user = await renderApp()
+    vi.spyOn(window, 'confirm').mockReturnValue(true) // joining from Settings asks first
+      const user = await renderApp()
     expect(await screen.findByText('2 składniki · porcje: 2')).toBeInTheDocument()
     await user.click(tab(/Ustawienia/))
     expect(screen.getByRole('combobox', { name: 'Język' })).toHaveValue('pl')
@@ -366,6 +367,15 @@ describe('cloud mode', () => {
 
   describe('signed in', () => {
     beforeEach(() => saveTokens({ idToken: jwt({ email: 'me@example.com' }) }))
+
+    it('opens offline with an expired session, instead of asking to sign in (which needs a connection)', async () => {
+      saveTokens({ idToken: jwt({ email: 'me@example.com' }), expiresAt: Date.now() - 1 })
+      fakeApi({}, { [`POST ${CFG.cognitoDomain}/oauth2/token`]: () => Promise.reject(new TypeError('Failed to fetch')) })
+      await renderApp()
+      expect(await screen.findByRole('alert')).toHaveTextContent('Failed to fetch')
+      expect(screen.queryByRole('button', { name: 'Continue with Google' })).not.toBeInTheDocument()
+      expect(localStorage.getItem('gg.tokens')).not.toBeNull() // still signed in for when the signal is back
+    })
 
     describe('problem reports', () => {
       it('report a problem from Settings, with recent steps and the app version', async () => {

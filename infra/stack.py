@@ -49,7 +49,8 @@ ANTHROPIC_SECRET_NAME = "grubgrab/anthropic-api-key"
 DEFAULT_AI_MODEL = "claude-opus-5-5"
 DEFAULT_AI_EFFORT = "low"
 DEFAULT_AI_MONTHLY_LIMIT = 20
-IMPORT_WORKER_TIMEOUT = Duration.seconds(200)  # a slow page can take a while; well past API Gateway's 30 s
+# Worst case: reading the page (under 25 s, see page.py) plus three 60 s AI requests (anthropic_provider.py).
+IMPORT_WORKER_TIMEOUT = Duration.seconds(240)
 IMPORT_WORKER_MAX_CONCURRENCY = 2
 ADMIN_GROUP = "admins"  # must match api/src/grubgrab/handler.py
 
@@ -60,12 +61,15 @@ GOOGLE_SECRET_NAME = "grubgrab/google-client-secret"
 
 API_SRC = ROOT / "api" / "src"
 API_REQUIREMENTS = ROOT / "api" / "requirements.txt"
+# Exactly what goes into Lambda, with checksums (api/update-lock.sh makes it from requirements.txt).
+API_LOCK = ROOT / "api" / "requirements.lock.txt"
 
 
 @jsii.implements(ILocalBundling)
 class PipBundling:
     """Package the API code with its Python dependencies (the Anthropic SDK) for Lambda, without Docker:
-    pip downloads the wheels built for Lambda's Linux on ARM and Python 3.13."""
+    pip downloads the wheels built for Lambda's Linux on ARM and Python 3.13, exactly as locked, and refuses
+    any whose checksum doesn't match."""
 
     def __init__(self, run=subprocess.run):
         self._run = run
@@ -73,9 +77,9 @@ class PipBundling:
     def try_bundle(self, output_dir: str, *args, **kwargs) -> bool:
         command = [
             sys.executable, "-m", "pip", "install", "--quiet", "--no-compile",
-            "--requirement", str(API_REQUIREMENTS), "--target", output_dir,
+            "--requirement", str(API_LOCK), "--require-hashes", "--no-deps", "--target", output_dir,
             "--platform", "manylinux2014_aarch64", "--implementation", "cp", "--python-version", "3.13",
-            "--only-binary=:all:", "--upgrade",
+            "--only-binary=:all:",
         ]  # fmt: skip
         if self._run(command, check=False).returncode != 0:
             return False  # fall back to building in the Lambda Docker image
@@ -86,12 +90,15 @@ class PipBundling:
 def api_code() -> lambda_.Code:
     return lambda_.Code.from_asset(
         str(API_SRC.parent),  # api/: the asset hash changes when the code or requirements.txt change
-        exclude=["*", "!src", "!src/**", "!requirements.txt", "**/__pycache__"],
+        exclude=["*", "!src", "!src/**", "!requirements.lock.txt", "**/__pycache__"],
         bundling=BundlingOptions(
             image=DockerImage.from_registry("public.ecr.aws/sam/build-python3.13:latest-arm64"),
             platform="linux/arm64",
             local=PipBundling(),
-            command=["bash", "-c", "pip install -r requirements.txt -t /asset-output && cp -r src/. /asset-output"],
+            command=[
+                "bash", "-c",
+                "pip install --require-hashes --no-deps -r requirements.lock.txt -t /asset-output && cp -r src/. /asset-output",
+            ],  # fmt: skip
         ),
     )
 

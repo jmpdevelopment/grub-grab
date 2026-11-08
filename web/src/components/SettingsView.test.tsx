@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsView } from './SettingsView'
 
 function setup(props: Partial<Parameters<typeof SettingsView>[0]> = {}) {
@@ -22,6 +22,19 @@ function setup(props: Partial<Parameters<typeof SettingsView>[0]> = {}) {
 }
 
 describe('SettingsView', () => {
+  beforeEach(() => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true) // "join their household?"
+  })
+
+  it('asks before joining, since a household nobody else is in gets deleted', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { user, onJoin } = setup()
+    await user.type(screen.getByPlaceholderText('ABCDE-FGH23'), 'ABCDEFGH23')
+    await user.click(screen.getByRole('button', { name: 'Join' }))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('its recipes and list will be deleted'))
+    expect(onJoin).not.toHaveBeenCalled()
+  })
+
   it('report a problem', async () => {
     const onFeedback = vi.fn().mockResolvedValue('sent')
     const { user } = setup({ onFeedback })

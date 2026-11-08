@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { CFG, fakeFetch, fakeLocation, json, jwt, saveTokens } from '../test/fakes'
-import { completeSignIn, currentEmail, forgetSession, getAccessToken, SignInNotice, signIn, signOut } from './auth'
+import { completeSignIn, currentEmail, forgetSession, getAccessToken, hasSession, SignInNotice, signIn, signOut } from './auth'
 
 const TOKEN_URL = 'POST https://auth.example.com/oauth2/token'
 const tokenResponse = (over = {}) =>
@@ -94,6 +94,7 @@ describe('completeSignIn', () => {
       code_verifier: 'verifier-1',
     })
     expect(window.history.replaceState).toHaveBeenCalledWith({}, '', '/')
+    expect(sessionStorage.getItem('gg.pkce')).toBeNull() // used once
     expect(await getAccessToken(CFG)).toBe('access-new')
     expect(currentEmail()).toBe('a@b.c')
   })
@@ -121,13 +122,21 @@ describe('completeSignIn', () => {
       expect(fn).not.toHaveBeenCalled()
     })
 
-    it('reports any other error as a failure', async () => {
+    it('reports any other error as a failure, by its standard code only', async () => {
       back('error=access_denied&error_description=User+cancelled')
       const err = await completeSignIn(CFG).catch((e) => e)
       expect(err).not.toBeInstanceOf(SignInNotice)
-      expect(err.message).toBe('Sign-in failed: User cancelled')
+      expect(err.message).toBe('Sign-in failed: access_denied')
+      expect(err.params).toEqual({ detail: 'access_denied' })
       back('error=server_error')
       await expect(completeSignIn(CFG)).rejects.toThrow('Sign-in failed: server_error')
+    })
+
+    it('never shows text someone put in a link', async () => {
+      back('error=Your+account+is+locked.+Call+0800+123&error_description=Visit+evil.example+now')
+      const err = await completeSignIn(CFG).catch((e) => e)
+      expect(err.message).toBe('Sign-in failed: unknown')
+      expect(JSON.stringify(err.params)).not.toContain('evil')
     })
   })
 
@@ -170,11 +179,24 @@ describe('getAccessToken', () => {
     expect(await getAccessToken(CFG)).toBeNull()
   })
 
-  it('signs out when the refresh is rejected', async () => {
+  it.each([400, 401])('signs out when Cognito rejects the refresh (%i)', async (status) => {
     saveTokens({ expiresAt: Date.now() - 1 })
-    fakeFetch({ [TOKEN_URL]: () => json({ error: 'invalid_grant' }, 400) })
+    fakeFetch({ [TOKEN_URL]: () => json({ error: 'invalid_grant' }, status) })
     expect(await getAccessToken(CFG)).toBeNull()
     expect(localStorage.getItem('gg.tokens')).toBeNull()
+    expect(hasSession()).toBe(false)
+  })
+
+  it('stays signed in when the refresh can\'t get through (offline, or Cognito having a moment)', async () => {
+    saveTokens({ expiresAt: Date.now() - 1, refreshToken: 'refresh-1' })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    await expect(getAccessToken(CFG)).rejects.toThrow('Failed to fetch')
+    expect(hasSession()).toBe(true)
+    fakeFetch({ [TOKEN_URL]: () => json({ error: 'internal' }, 503) })
+    await expect(getAccessToken(CFG)).rejects.toThrow('Sign-in failed (503)')
+    expect(hasSession()).toBe(true)
+    fakeFetch({ [TOKEN_URL]: () => tokenResponse() }) // back online
+    expect(await getAccessToken(CFG)).toBe('access-new')
   })
 })
 

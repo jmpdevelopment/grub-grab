@@ -31,6 +31,19 @@ describe('journey', () => {
     expect(journey(1000 + MAX_STEPS + 19 + MAX_AGE_MS)).toHaveLength(1) // only the newest is that recent
   })
 
+  it('the same request with the same result again is one step with a count', () => {
+    record({ type: 'screen', name: 'list' }, 1)
+    for (let n = 0; n < 200; n++) record({ type: 'api', route: 'GET /list', status: 200, ms: 30 }, 2 + n) // a while on the List tab
+    record({ type: 'api', route: 'GET /list', status: 502, ms: 40 }, 300) // a different result: its own step
+    record({ type: 'api', route: 'GET /list', status: 200, ms: 30 }, 301)
+    expect(journey(400)).toEqual([
+      { type: 'screen', name: 'list', t: 1 },
+      { type: 'api', route: 'GET /list', status: 200, ms: 30, t: 201, repeats: 200 },
+      { type: 'api', route: 'GET /list', status: 502, ms: 40, t: 300 },
+      { type: 'api', route: 'GET /list', status: 200, ms: 30, t: 301 },
+    ])
+  })
+
   it('still works when storage is full', () => {
     const setItem = Storage.prototype.setItem
     Storage.prototype.setItem = () => {

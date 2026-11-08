@@ -25,7 +25,7 @@ DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_EFFORT = "low"  # reading one page doesn't need deep reasoning; keeps it fast and cheap
 _MAX_PAUSES = 2  # a server-tool turn can pause; resume it a couple of times at most
 # Runs in the background import worker (not inside an API request), so a slow page has time; the worker's
-# own limit (200 s) covers the worst case of three requests.
+# own limit (240 s) covers the worst case: reading the page (under 25 s) and three requests.
 _TIMEOUT_SECONDS = 60.0
 
 

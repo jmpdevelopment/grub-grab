@@ -271,11 +271,17 @@ class Store:
         return int(resp["Attributes"]["attempts"])
 
     def join_household(self, user_sub: str, code: str) -> dict | None:
+        """Move the user into the household with this invite code. The one they leave is deleted if nobody
+        else is in it (otherwise its recipes would stay forever, out of everyone's reach)."""
         invite = self.table.get_item(Key={"PK": f"INVITE#{code}", "SK": "INVITE"}).get("Item")
         if not invite:
             return None
-        self.table.put_item(Item={"PK": f"USER#{user_sub}", "SK": "PROFILE", "householdId": invite["householdId"]})
-        return self.get_household(invite["householdId"])
+        joining = invite["householdId"]
+        leaving = self.find_household(user_sub)
+        self.table.put_item(Item={"PK": f"USER#{user_sub}", "SK": "PROFILE", "householdId": joining})
+        if leaving and leaving["householdId"] != joining and not self._others_in_household(leaving["householdId"], user_sub):
+            self._delete_household(leaving)
+        return self.get_household(joining)
 
     def rotate_invite(self, household_id: str) -> dict:
         """Issue a new invite code; the old one stops working immediately."""
@@ -324,18 +330,22 @@ class Store:
                 return False
             kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
+    def _delete_household(self, household: dict) -> None:
+        """Everything in a household (recipes, list, imports, settings) and its invite code."""
+        with self.table.batch_writer() as batch:
+            for item in self._query(f"HH#{household['householdId']}"):
+                batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+            if household["inviteCode"]:
+                batch.delete_item(Key={"PK": f"INVITE#{household['inviteCode']}", "SK": "INVITE"})
+
     def delete_user_data(self, user_sub: str, username: str) -> bool:
         """Remove everything stored about a user. Their household (recipes, list, invite code) goes too
         if nobody else is in it; otherwise it stays for the others. Returns True if it was deleted."""
         household = self.find_household(user_sub)
-        household_deleted = False
+        household_deleted = bool(household) and not self._others_in_household(household["householdId"], user_sub)
+        if household_deleted:
+            self._delete_household(household)
         with self.table.batch_writer() as batch:
-            if household and not self._others_in_household(household["householdId"], user_sub):
-                for item in self._query(f"HH#{household['householdId']}"):
-                    batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
-                if household["inviteCode"]:
-                    batch.delete_item(Key={"PK": f"INVITE#{household['inviteCode']}", "SK": "INVITE"})
-                household_deleted = True
             for item in self._query(f"USER#{user_sub}"):  # profile and join-attempt counters
                 batch.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
             batch.delete_item(Key={"PK": _ACCESS, "SK": f"REQ#{username}"})  # signing in again means asking again

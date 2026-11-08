@@ -171,6 +171,7 @@ export const lt: Messages = {
   'settings.newCodeReady': 'Naujas kodas paruoštas.',
   'settings.joinTitle': 'Prisijungti prie namų ūkio',
   'settings.joinText': 'Turite kodą? Prisijungę matysite to namų ūkio receptus ir sąrašą.',
+  'settings.joinConfirm': 'Prisijungti prie jų namų ūkio? Jei dabartiniame nėra nieko kito, jo receptai ir sąrašas bus ištrinti.',
   'settings.joined': 'Prisijungta! Dabar dalijatės receptais ir sąrašu.',
 
   'requests.title': 'Prašymai prisijungti',

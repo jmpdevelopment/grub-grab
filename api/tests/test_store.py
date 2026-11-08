@@ -137,6 +137,31 @@ class TestHouseholds:
     def test_join_unknown_code(self, store):
         assert store.join_household("bob", "NOPE00") is None
 
+    def test_leaving_a_household_nobody_else_is_in_deletes_it(self, store):
+        mine = store.create_household("bob")
+        store.put_recipe(mine["householdId"], {"title": "Old soup", "ingredients": []})
+        store.add_item(mine["householdId"], "leek", None, "")
+        theirs = store.create_household("alice")
+        assert store.join_household("bob", theirs["inviteCode"]) == theirs
+        assert store._query(f"HH#{mine['householdId']}") == []  # recipes, list, settings: gone
+        assert store.join_household("carol", mine["inviteCode"]) is None  # its old code no longer works
+        assert store.list_recipes(theirs["householdId"]) == []  # the new one is untouched
+
+    def test_leaving_a_shared_household_keeps_it_for_the_others(self, store):
+        shared = store.create_household("alice")
+        store.join_household("bob", shared["inviteCode"])
+        store.put_recipe(shared["householdId"], {"title": "Stew", "ingredients": []})
+        elsewhere = store.create_household("carol")
+        store.join_household("bob", elsewhere["inviteCode"])
+        assert [r["title"] for r in store.list_recipes(shared["householdId"])] == ["Stew"]
+        assert store.household_for("alice") == shared["householdId"]
+
+    def test_joining_your_own_household_again_changes_nothing(self, store):
+        mine = store.create_household("bob")
+        store.put_recipe(mine["householdId"], {"title": "Soup", "ingredients": []})
+        assert store.join_household("bob", mine["inviteCode"]) == mine
+        assert [r["title"] for r in store.list_recipes(mine["householdId"])] == ["Soup"]
+
 
 class TestAisles:
     def test_remembers_where_the_household_moved_items(self, store):

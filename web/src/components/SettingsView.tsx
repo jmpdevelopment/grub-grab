@@ -102,7 +102,7 @@ export function SettingsView({
             <section className="panel">
               <h3>{t('settings.joinTitle')}</h3>
               <p className="muted">{t('settings.joinText')}</p>
-              <JoinForm onJoin={onJoin} joinedMessage={t('settings.joined')} />
+              <JoinForm onJoin={onJoin} joinedMessage={t('settings.joined')} confirmText={t('settings.joinConfirm')} />
             </section>
 
             {onDeleteAccount && <DeleteAccount admin={Boolean(household?.admin)} onDelete={onDeleteAccount} />}

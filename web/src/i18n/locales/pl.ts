@@ -171,6 +171,7 @@ export const pl: Messages = {
   'settings.newCodeReady': 'Nowy kod gotowy.',
   'settings.joinTitle': 'Dołącz do gospodarstwa',
   'settings.joinText': 'Masz kod? Po dołączeniu zobaczysz przepisy i listę tego gospodarstwa.',
+  'settings.joinConfirm': 'Dołączyć do ich gospodarstwa? Jeśli w obecnym nie ma nikogo poza Tobą, jego przepisy i lista zostaną usunięte.',
   'settings.joined': 'Dołączono! Teraz dzielicie przepisy i listę.',
 
   'requests.title': 'Prośby o dołączenie',

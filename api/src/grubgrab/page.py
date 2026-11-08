@@ -9,7 +9,9 @@ This is the one place the app downloads a page a person chose, so the download i
   - http and https on the standard ports only, at most a few redirects, each one checked again;
   - the address must be a public internet address, and the connection goes to the address that was
     checked (so a name can't be re-pointed at an internal one in between);
-  - HTML only, a few MB at most, and a hard time limit for the whole download.
+  - HTML only, a few MB at most, and a time limit for the whole download: no single wait is longer than
+    _TIMEOUT_SECONDS and nothing new starts after _DEADLINE_SECONDS, so even a page that trickles in a byte
+    at a time is cut off within their sum.
 Only the recipe fields below ever leave this module; nothing else from the page is kept.
 """
 
@@ -29,8 +31,8 @@ from urllib.parse import urljoin, urlsplit
 
 log = logging.getLogger(__name__)
 
-_TIMEOUT_SECONDS = 8.0  # per connect or read
-_DEADLINE_SECONDS = 15.0  # for the whole download, however slowly the page trickles in
+_TIMEOUT_SECONDS = 8.0  # longest wait for any one step
+_DEADLINE_SECONDS = 15.0  # for the whole download, redirects included, however slowly the page trickles in
 _MAX_BYTES = 3_000_000
 _MAX_REDIRECTS = 3
 _PORTS = {"http": 80, "https": 443}
@@ -58,11 +60,18 @@ def _public_address(host: str, port: int) -> str:
     return addresses[0]
 
 
+def _time_left(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("the page took too long")
+    return min(_TIMEOUT_SECONDS, left)
+
+
 class _PinnedHTTP(http.client.HTTPConnection):
     """Connects to an address checked beforehand, while still asking for the site by its name."""
 
-    def __init__(self, host: str, port: int, address: str):
-        super().__init__(host, port, timeout=_TIMEOUT_SECONDS)
+    def __init__(self, host: str, port: int, address: str, timeout: float):
+        super().__init__(host, port, timeout=timeout)
         self.address = address
 
     def connect(self):
@@ -77,7 +86,7 @@ class _PinnedHTTPS(_PinnedHTTP):
         self.sock = ssl.create_default_context().wrap_socket(self.sock, server_hostname=self.host)
 
 
-def _connection(url: str) -> tuple[_PinnedHTTP, str]:
+def _connection(url: str, deadline: float) -> tuple[_PinnedHTTP, str]:
     parts = urlsplit(url)
     if parts.scheme not in _PORTS or not parts.hostname or parts.username or parts.password:
         raise Blocked(url)
@@ -86,23 +95,29 @@ def _connection(url: str) -> tuple[_PinnedHTTP, str]:
         raise Blocked(url)
     cls = _PinnedHTTPS if parts.scheme == "https" else _PinnedHTTP
     target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
-    return cls(parts.hostname, port, _public_address(parts.hostname, port)), target
+    return cls(parts.hostname, port, _public_address(parts.hostname, port), _time_left(deadline)), target
 
 
 def _read(response: http.client.HTTPResponse, deadline: float) -> bytes:
+    """Whatever arrives before the time limit (the recipe data is usually near the top), up to _MAX_BYTES."""
     body = b""
-    while chunk := response.read(65536):
+    while len(body) <= _MAX_BYTES and time.monotonic() < deadline:
+        try:
+            chunk = response.read1(65536)  # what has arrived, rather than waiting for a full 64 KB
+        except TimeoutError:  # nothing for _TIMEOUT_SECONDS
+            break
+        if not chunk:
+            break
         body += chunk
-        if len(body) > _MAX_BYTES or time.monotonic() > deadline:
-            break  # read enough: the recipe data is usually near the top
     return body[:_MAX_BYTES]
 
 
 def fetch_html(url: str) -> str | None:
-    """The page's HTML, or None if it isn't an HTML page that loaded. Raises Blocked for links it won't follow."""
+    """The page's HTML, or None if it isn't an HTML page that loaded. Raises Blocked for links it won't follow,
+    TimeoutError if it doesn't start arriving in time."""
     deadline = time.monotonic() + _DEADLINE_SECONDS
     for _ in range(_MAX_REDIRECTS + 1):
-        conn, target = _connection(url)
+        conn, target = _connection(url, deadline)
         try:
             conn.request(
                 "GET",

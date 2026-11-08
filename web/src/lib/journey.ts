@@ -5,7 +5,7 @@
 export type Step =
   | { type: 'screen'; name: string }
   | { type: 'action'; name: string; [detail: string]: string | number | boolean }
-  | { type: 'api'; route: string; status: number; ms: number; requestId?: string }
+  | { type: 'api'; route: string; status: number; ms: number; requestId?: string; repeats?: number }
   | { type: 'error'; code: string; where: string }
 
 export type Recorded = Step & { t: number }
@@ -33,7 +33,16 @@ export function journey(now = Date.now()): Recorded[] {
 }
 
 export function record(step: Step, now = Date.now()) {
-  steps = [...journey(now), { ...step, t: now } as Recorded].slice(-MAX_STEPS)
+  const kept = journey(now)
+  const last = kept.at(-1)
+  // The same request with the same result again (the list's 8-second refresh): one step with a count,
+  // so a while on the List tab doesn't push everything else out.
+  if (step.type === 'api' && last?.type === 'api' && last.route === step.route && last.status === step.status) {
+    kept[kept.length - 1] = { ...step, t: now, repeats: (last.repeats ?? 1) + 1 }
+    steps = kept
+  } else {
+    steps = [...kept, { ...step, t: now } as Recorded].slice(-MAX_STEPS)
+  }
   try {
     sessionStorage.setItem(KEY, JSON.stringify(steps))
   } catch {

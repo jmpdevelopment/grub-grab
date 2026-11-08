@@ -203,4 +203,6 @@ cd web && npm run build && npm run lint
 cd infra && pytest -q tests && cdk synth -c googleClientId=dummy
 ```
 
+The Lambda functions get exactly the packages in `api/requirements.lock.txt` (pinned, with checksums). After changing `api/requirements.txt`, run `api/update-lock.sh`, check the diff and commit both.
+
 Quantity merging lives in `api/src/grubgrab/aggregate.py`, mirrored in `web/src/lib/aggregate.ts` for local mode. It converts g↔kg, ml↔l and tsp↔tbsp, and only adds quantities together when the ingredient name and unit family match.

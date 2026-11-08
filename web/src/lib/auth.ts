@@ -51,13 +51,21 @@ function saveTokens(t: Tokens) {
   localStorage.setItem(TOKENS_KEY, JSON.stringify(t))
 }
 
+/** Cognito said no to the token request (as opposed to the request never getting there). */
+class TokenRejected extends AppError {}
+
 async function tokenRequest(cfg: AppConfig, params: Record<string, string>): Promise<Tokens> {
   const res = await fetch(`${cfg.cognitoDomain}/oauth2/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: cfg.clientId, ...params }),
   })
-  if (!res.ok) throw new AppError('signin_failed', { detail: res.status }, `Sign-in failed (${res.status})`)
+  if (!res.ok) {
+    const error = new AppError('signin_failed', { detail: res.status }, `Sign-in failed (${res.status})`)
+    // 400/401: the session is no longer valid (revoked, expired, account deleted). Anything else is a
+    // passing problem on Cognito's side, like a lost connection: worth trying again, not signing out over.
+    throw res.status === 400 || res.status === 401 ? new TokenRejected(error.code, error.params, error.message) : error
+  }
   const data = await res.json()
   return {
     idToken: data.id_token,
@@ -110,11 +118,14 @@ export async function completeSignIn(cfg: AppConfig): Promise<void> {
     const description = params.get('error_description') ?? ''
     const notice = SIGN_UP_NOTICES[description.match(/\bACCESS_[A-Z]+\b/)?.[0] ?? '']
     if (notice) throw new SignInNotice(notice)
-    throw new AppError('signin_failed', { detail: description || error }, `Sign-in failed: ${description || error}`)
+    // Anyone can put text in a link, so only a standard OAuth error code is ever shown, never the description.
+    const code = /^[a-z_]{1,40}$/.test(error) ? error : 'unknown'
+    throw new AppError('signin_failed', { detail: code }, `Sign-in failed: ${code}`)
   }
   const code = params.get('code')
   if (!code) return
   const verifier = sessionStorage.getItem(VERIFIER_KEY) ?? ''
+  sessionStorage.removeItem(VERIFIER_KEY) // single use
   window.history.replaceState({}, '', '/')
   saveTokens(
     await tokenRequest(cfg, {
@@ -126,7 +137,11 @@ export async function completeSignIn(cfg: AppConfig): Promise<void> {
   )
 }
 
-/** Returns a valid access token, refreshing if needed, or null if signed out. */
+/**
+ * Returns a valid access token, refreshing if needed, or null if signed out. If the refresh can't reach
+ * Cognito (offline, say in a shop with no signal), it throws and keeps the session for next time: only a
+ * refresh Cognito actually refuses signs this device out.
+ */
 export async function getAccessToken(cfg: AppConfig): Promise<string | null> {
   const t = readTokens()
   if (!t) return null
@@ -136,11 +151,15 @@ export async function getAccessToken(cfg: AppConfig): Promise<string | null> {
     const fresh = await tokenRequest(cfg, { grant_type: 'refresh_token', refresh_token: t.refreshToken })
     saveTokens(fresh)
     return fresh.accessToken
-  } catch {
+  } catch (e) {
+    if (!(e instanceof TokenRejected)) throw e
     localStorage.removeItem(TOKENS_KEY)
     return null
   }
 }
+
+/** Is there a session on this device (even one whose access token needs refreshing)? */
+export const hasSession = () => readTokens() !== null
 
 /** Forget this device's session without visiting Cognito (e.g. after the account was deleted). */
 export function forgetSession() {

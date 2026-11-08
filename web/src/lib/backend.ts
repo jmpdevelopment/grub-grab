@@ -20,7 +20,7 @@ export interface ImportTiming {
   pollMs: number
   timeoutMs: number
 }
-const IMPORT_TIMING: ImportTiming = { pollMs: 2000, timeoutMs: 210_000 }
+const IMPORT_TIMING: ImportTiming = { pollMs: 2000, timeoutMs: 250_000 } // a little past the worker's 240 s
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 type ImportJob =

@@ -1,6 +1,7 @@
 import json
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -104,6 +105,30 @@ class Site(BaseHTTPRequestHandler):
     routes: dict = {}
 
     def do_GET(self):
+        if self.path.startswith("/drip"):  # a page that trickles in a byte at a time
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            for _ in range(1000):
+                try:
+                    self.wfile.write(b"a")
+                    self.wfile.flush()
+                except OSError:
+                    return  # the reader gave up, as it should
+                time.sleep(0.05)
+            return
+        if self.path.startswith("/stall-body"):  # headers, then silence
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.flush()
+            time.sleep(2)
+            return
+        if self.path.startswith("/stall"):  # answers nothing at all
+            time.sleep(2)
+            return
         status, headers, body = self.routes.get(self.path, (404, {}, b""))
         self.send_response(status)
         for key, value in headers.items():
@@ -195,11 +220,31 @@ class TestFetchHtml:
         routes["/big"] = (200, HTML, b"a" * 300_000)
         assert len(fetch_html(f"{base}/big")) == 100_000
 
-    def test_stops_at_the_deadline(self, site, monkeypatch):
-        routes, base = site
+    def test_a_trickling_page_is_cut_off_at_the_time_limit(self, site, monkeypatch):
+        _, base = site
+        monkeypatch.setattr(page, "_DEADLINE_SECONDS", 0.6)
+        started = time.monotonic()
+        html_text = fetch_html(f"{base}/drip")
+        assert time.monotonic() - started < 2  # not the 50 seconds the page would take
+        assert 0 < len(html_text) < 1000  # what arrived in time is kept
+
+    def test_a_page_that_never_answers_times_out(self, site, monkeypatch):
+        _, base = site
+        monkeypatch.setattr(page, "_DEADLINE_SECONDS", 0.3)
+        with pytest.raises(TimeoutError):
+            fetch_html(f"{base}/stall")
+
+    def test_no_time_left_means_no_new_connection(self, site, monkeypatch):
+        _, base = site
         monkeypatch.setattr(page, "_DEADLINE_SECONDS", -1)
-        routes["/slow"] = (200, HTML, b"a" * 300_000)
-        assert len(fetch_html(f"{base}/slow")) == 65536  # the first chunk, then it stops
+        with pytest.raises(TimeoutError, match="took too long"):
+            fetch_html(f"{base}/anything")
+
+    def test_a_read_that_stalls_keeps_what_arrived(self, site, monkeypatch):
+        _, base = site
+        monkeypatch.setattr(page, "_TIMEOUT_SECONDS", 0.2)
+        routes, _ = site
+        assert fetch_html(f"{base}/stall-body") == ""  # headers, then nothing: gives up after one wait
 
 
 class TestWhereItWontGo:
@@ -209,7 +254,7 @@ class TestWhereItWontGo:
     )
     def test_only_plain_web_links(self, url):
         with pytest.raises(Blocked):
-            page._connection(url)
+            page._connection(url, time.monotonic() + 10)
 
     @pytest.mark.parametrize(
         "addresses",
@@ -234,7 +279,7 @@ class TestWhereItWontGo:
     def test_connects_to_the_checked_address(self, monkeypatch):
         infos = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:2800:220:1::1", 443, 0, 0)), (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
         monkeypatch.setattr(page.socket, "getaddrinfo", lambda *a, **k: infos)
-        conn, target = page._connection("https://e.com/przepis?id=1")
+        conn, target = page._connection("https://e.com/przepis?id=1", time.monotonic() + 10)
         assert isinstance(conn, page._PinnedHTTPS)
         assert (conn.host, conn.port, conn.address, target) == ("e.com", 443, "2606:2800:220:1::1", "/przepis?id=1")
 
@@ -248,7 +293,7 @@ class TestWhereItWontGo:
                 return sock
 
         monkeypatch.setattr(page.ssl, "create_default_context", Context)
-        conn = page._PinnedHTTPS("e.com", listener.getsockname()[1], "127.0.0.1")
+        conn = page._PinnedHTTPS("e.com", listener.getsockname()[1], "127.0.0.1", 5)
         conn.connect()
         assert wrapped == {"name": "e.com"} and conn.sock.getpeername()[0] == "127.0.0.1"
         conn.close()

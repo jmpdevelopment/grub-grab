@@ -179,6 +179,7 @@ export const en = {
   'settings.newCodeReady': 'New code ready.',
   'settings.joinTitle': 'Join a household',
   'settings.joinText': 'Got a code? Joining switches you to their recipes and list.',
+  'settings.joinConfirm': 'Join their household? If nobody else is in your current one, its recipes and list will be deleted.',
   'settings.joined': 'Joined! You now share recipes and the list.',
 
   // ---- sign-up requests (admins) -------------------------------------------------------
