@@ -32,6 +32,10 @@ def _strip_keys(item: dict) -> dict:
     return {k: v for k, v in item.items() if k not in ("PK", "SK")}
 
 
+def _recipe(item: dict) -> dict:
+    return {"tags": [], **_strip_keys(item)}  # recipes saved before tags existed have none
+
+
 def random_invite_code() -> str:
     return "".join(secrets.choice(INVITE_ALPHABET) for _ in range(INVITE_LENGTH))
 
@@ -155,12 +159,12 @@ class Store:
     # ---- recipes ------------------------------------------------------------
 
     def list_recipes(self, household_id: str) -> list[dict]:
-        recipes = [_strip_keys(i) for i in self._query_prefix(household_id, "RECIPE#")]
+        recipes = [_recipe(i) for i in self._query_prefix(household_id, "RECIPE#")]
         return sorted(recipes, key=lambda r: r.get("title", "").lower())
 
     def get_recipe(self, household_id: str, recipe_id: str) -> dict | None:
         item = self.table.get_item(Key={"PK": f"HH#{household_id}", "SK": f"RECIPE#{recipe_id}"}).get("Item")
-        return _strip_keys(item) if item else None
+        return _recipe(item) if item else None
 
     def put_recipe(self, household_id: str, recipe: dict, recipe_id: str | None = None) -> dict:
         recipe_id = recipe_id or uuid.uuid4().hex
@@ -171,6 +175,7 @@ class Store:
             "title": recipe["title"],
             "servings": recipe.get("servings"),
             "notes": recipe.get("notes", ""),
+            "tags": recipe.get("tags", []),
             "ingredients": recipe["ingredients"],
             "updatedAt": self._now(),
         }

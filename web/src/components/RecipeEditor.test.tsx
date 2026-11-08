@@ -48,6 +48,7 @@ describe('RecipeEditor', () => {
       title: 'Toast',
       servings: 2,
       notes: 'Toast it',
+      tags: [],
       ingredients: [
         { name: 'Bread', quantity: 1.5, unit: 'slices' },
         { name: 'Butter', quantity: null, unit: '' },
@@ -131,7 +132,44 @@ describe('RecipeEditor', () => {
       title: 'Pasta',
       servings: null,
       notes: 'Boil it',
+      tags: [],
       ingredients: [{ name: 'Salt', quantity: null, unit: '' }],
+    })
+  })
+
+  describe('tags', () => {
+    const chips = () => within(screen.getByRole('group', { name: 'Tags' })).queryAllByRole('button').map((b) => b.textContent)
+    const suggestions = () => screen.queryAllByRole('button', { name: /^\+ / }).map((b) => b.textContent)
+
+    it('adds tags by Enter, comma, suggestion or leaving the box; cleans and de-duplicates them', async () => {
+      const { user, onSave } = setup({ knownTags: ['polish', 'soup'] })
+      expect(suggestions()).toEqual(['+ polish', '+ soup', '+ meat', '+ chicken', '+ fish', '+ vegetarian', '+ pasta', '+ salad', '+ quick'])
+
+      const box = screen.getByLabelText('New tag')
+      await user.type(box, ' Soup {enter}')
+      await user.type(box, 'FISH,')
+      await user.type(box, 'soup{enter}') // already there
+      await user.type(box, '   {enter}') // blank
+      expect(chips()).toEqual(['soup ×', 'fish ×'])
+      expect(box).toHaveValue('')
+      expect(suggestions()).not.toContain('+ soup') // used tags aren't suggested again
+
+      await user.click(screen.getByRole('button', { name: '+ polish' }))
+      await user.type(box, 'quick')
+      await user.click(screen.getByPlaceholderText('e.g. Chicken curry')) // leaving the box keeps the tag
+      expect(chips()).toEqual(['soup ×', 'fish ×', 'polish ×', 'quick ×'])
+
+      await user.click(screen.getByRole('button', { name: 'Remove tag fish' }))
+      await user.type(screen.getByPlaceholderText('e.g. Chicken curry'), 'Zurek')
+      await user.type(box, 'Late') // typed but not confirmed: Save still keeps it
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ title: 'Zurek', tags: ['soup', 'polish', 'quick', 'late'] }))
+    })
+
+    it("shows an existing recipe's tags and hides suggestions once all are used", () => {
+      setup({ recipe: { ...PASTA, tags: ['meat', 'chicken', 'fish', 'vegetarian', 'soup', 'pasta', 'salad', 'quick'] } })
+      expect(chips()).toHaveLength(8)
+      expect(suggestions()).toEqual([])
     })
   })
 

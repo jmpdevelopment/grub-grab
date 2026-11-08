@@ -10,6 +10,8 @@ export interface Recipe {
   servings: number | null
   notes: string
   ingredients: Ingredient[]
+  /** Lower-case labels like "soup" or "fish". Missing on recipes saved before tags existed. */
+  tags?: string[]
 }
 
 export type RecipeInput = Omit<Recipe, 'id'>

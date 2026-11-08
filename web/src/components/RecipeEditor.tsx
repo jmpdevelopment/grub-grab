@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import { parseIngredientLine } from '../lib/aggregate'
+import { cleanTag, SUGGESTED_TAGS } from '../lib/tags'
 import type { Ingredient, Recipe, RecipeInput } from '../types'
 
 interface Props {
   recipe: Recipe | null
+  /** Tags already used on other recipes, suggested first. */
+  knownTags?: string[]
   onSave: (r: RecipeInput) => Promise<void>
   onDelete?: () => Promise<void>
   onCancel: () => void
@@ -13,10 +16,12 @@ type Row = { name: string; quantity: string; unit: string }
 const toRow = (i: Ingredient): Row => ({ name: i.name, quantity: i.quantity === null ? '' : String(i.quantity), unit: i.unit })
 const emptyRow = (): Row => ({ name: '', quantity: '', unit: '' })
 
-export function RecipeEditor({ recipe, onSave, onDelete, onCancel }: Props) {
+export function RecipeEditor({ recipe, knownTags = [], onSave, onDelete, onCancel }: Props) {
   const [title, setTitle] = useState(recipe?.title ?? '')
   const [servings, setServings] = useState(recipe?.servings ? String(recipe.servings) : '')
   const [notes, setNotes] = useState(recipe?.notes ?? '')
+  const [tags, setTags] = useState<string[]>(recipe?.tags ?? [])
+  const [tagDraft, setTagDraft] = useState('')
   const [rows, setRows] = useState<Row[]>(recipe ? [...recipe.ingredients.map(toRow), emptyRow()] : [emptyRow()])
   const [paste, setPaste] = useState('')
   const [showPaste, setShowPaste] = useState(false)
@@ -42,6 +47,16 @@ export function RecipeEditor({ recipe, onSave, onDelete, onCancel }: Props) {
     setShowPaste(false)
   }
 
+  const withTag = (list: string[], raw: string) => {
+    const tag = cleanTag(raw)
+    return tag && !list.includes(tag) ? [...list, tag] : list
+  }
+  const addTag = (raw: string) => {
+    setTags((prev) => withTag(prev, raw))
+    setTagDraft('')
+  }
+  const suggestions = [...new Set([...knownTags, ...SUGGESTED_TAGS])].filter((t) => !tags.includes(t))
+
   const save = async () => {
     if (!title.trim()) return setError('Give the recipe a title')
     const ingredients: Ingredient[] = []
@@ -54,7 +69,9 @@ export function RecipeEditor({ recipe, onSave, onDelete, onCancel }: Props) {
     setBusy(true)
     setError(null)
     try {
-      await onSave({ title: title.trim(), servings: servings ? Number(servings) : null, notes, ingredients })
+      // A tag still being typed counts, so it isn't lost by tapping Save straight away.
+      const allTags = withTag(tags, tagDraft)
+      await onSave({ title: title.trim(), servings: servings ? Number(servings) : null, notes, tags: allTags, ingredients })
     } catch (e) {
       setError((e as Error).message)
       setBusy(false)
@@ -79,6 +96,41 @@ export function RecipeEditor({ recipe, onSave, onDelete, onCancel }: Props) {
           <span>Serves</span>
           <input inputMode="numeric" value={servings} onChange={(e) => setServings(e.target.value.replace(/\D/g, ''))} placeholder="4" />
         </label>
+
+        <div className="field">
+          <span id="tags-label">Tags</span>
+          <div className="tags" role="group" aria-labelledby="tags-label">
+            {tags.map((t) => (
+              <button key={t} className="tag on" aria-label={`Remove tag ${t}`} onClick={() => setTags((prev) => prev.filter((x) => x !== t))}>
+                {t} ×
+              </button>
+            ))}
+            <input
+              className="tag-input"
+              value={tagDraft}
+              onChange={(e) => setTagDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ',') {
+                  e.preventDefault()
+                  addTag(tagDraft)
+                }
+              }}
+              onBlur={() => addTag(tagDraft)}
+              placeholder="Add a tag"
+              aria-label="New tag"
+              enterKeyHint="done"
+            />
+          </div>
+          {suggestions.length > 0 && (
+            <div className="tags suggestions">
+              {suggestions.map((t) => (
+                <button key={t} className="tag" onClick={() => addTag(t)}>
+                  + {t}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="section-head">
           <h3>Ingredients</h3>

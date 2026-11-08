@@ -13,6 +13,8 @@ from .store import INVITE_LENGTH, Store, normalise_invite_code
 MAX_TEXT = 200
 MAX_NOTES = 10_000
 MAX_INGREDIENTS = 200
+MAX_TAGS = 20
+MAX_TAG_LEN = 30
 MAX_RECIPES_PER_LIST = 50
 MAX_QUANTITY = Decimal(1_000_000)
 MAX_JOIN_ATTEMPTS_PER_HOUR = 5
@@ -91,6 +93,22 @@ def _quantity(value) -> Decimal | None:
     return q
 
 
+def _tags(value) -> list[str]:
+    """Free-form labels like "soup" or "fish". Lower-cased and de-duplicated so filters group them."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ApiError(400, "Tags must be a list")
+    tags: list[str] = []
+    for raw in value:
+        tag = _text(raw, "Tag", max_len=MAX_TAG_LEN).lower()
+        if tag and tag not in tags:
+            tags.append(tag)
+    if len(tags) > MAX_TAGS:
+        raise ApiError(400, f"Too many tags (max {MAX_TAGS})")
+    return tags
+
+
 def _servings(value) -> int | None:
     if value is None or value == "":
         return None
@@ -119,6 +137,7 @@ def _validate_recipe(data: dict) -> dict:
         "title": _text(data.get("title"), "Title", required=True),
         "servings": _servings(data.get("servings")),
         "notes": _text(data.get("notes"), "Notes", max_len=MAX_NOTES),
+        "tags": _tags(data.get("tags")),
         "ingredients": ingredients,
     }
 

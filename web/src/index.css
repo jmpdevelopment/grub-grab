@@ -154,3 +154,17 @@ input[type='checkbox'] { width: 24px; height: 24px; accent-color: var(--green); 
   background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 999px; font-size: 0.9rem;
 }
 .setup-intro { margin: 4px 0 16px; }
+
+/* ---- tags ---- */
+.tags { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tags.suggestions { margin-top: 10px; }
+.tag {
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  border-radius: 999px; padding: 6px 12px; font-size: 0.9rem; cursor: pointer; white-space: nowrap;
+}
+.tags.suggestions .tag { color: var(--muted); }
+.tag.on, .tag[aria-pressed='true'] { background: var(--green); border-color: var(--green); color: #fff; }
+.tag-input { flex: 1 1 120px; min-width: 120px; }
+/* One scrolling row of filter chips; scrolls on its own so the page never scrolls sideways. */
+.tag-filter { display: flex; gap: 8px; overflow-x: auto; margin: 0 -16px 12px; padding: 0 16px 2px; scrollbar-width: none; }
+.card-tags { display: block; color: var(--green); font-size: 0.82rem; margin-top: 2px; }

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { Recipe } from '../types'
@@ -22,7 +22,54 @@ function setup(recipes: Recipe[], hasList = false) {
   return { user: userEvent.setup(), onOpen, onMakeList }
 }
 
+const tagged = (r: Recipe, ...tags: string[]): Recipe => ({ ...r, tags })
+
 describe('RecipesView', () => {
+  describe('tags', () => {
+    const titles = () => screen.getAllByRole('listitem').map((li) => li.querySelector('strong')!.textContent)
+    const chip = (name: string) => within(screen.getByRole('group', { name: 'Filter by tag' })).getByRole('button', { name })
+
+    it('has no tag filter when no recipe is tagged', () => {
+      setup([PASTA, SOUP])
+      expect(screen.queryByRole('group', { name: 'Filter by tag' })).not.toBeInTheDocument()
+    })
+
+    it('shows tags on cards and filters by one tag at a time, most-used tags first', async () => {
+      const { user } = setup([tagged(PASTA, 'pasta', 'quick'), tagged(SOUP, 'soup', 'quick'), tagged(recipe('f', 'Fish pie'), 'fish')])
+      expect(screen.getByText('pasta · quick')).toBeInTheDocument()
+      const group = screen.getByRole('group', { name: 'Filter by tag' })
+      expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['quick', 'fish', 'pasta', 'soup'])
+
+      await user.click(chip('quick'))
+      expect(chip('quick')).toHaveAttribute('aria-pressed', 'true')
+      expect(titles()).toEqual(['Pasta', 'Soup'])
+      await user.click(chip('soup')) // switching tag replaces the filter
+      expect(titles()).toEqual(['Soup'])
+      expect(chip('quick')).toHaveAttribute('aria-pressed', 'false')
+      await user.click(chip('soup')) // tapping again clears it
+      expect(titles()).toEqual(['Pasta', 'Soup', 'Fish pie'])
+    })
+
+    it('forgets a filter once no recipe has that tag any more', async () => {
+      const onOpen = vi.fn()
+      const props = { hasList: false, onOpen, onMakeList: vi.fn() }
+      const { rerender } = render(<RecipesView recipes={[tagged(SOUP, 'soup'), tagged(PASTA, 'pasta')]} {...props} />)
+      await userEvent.setup().click(chip('soup'))
+      expect(titles()).toEqual(['Soup'])
+      rerender(<RecipesView recipes={[SOUP, tagged(PASTA, 'pasta')]} {...props} />)
+      expect(titles()).toEqual(['Soup', 'Pasta'])
+    })
+
+    it('finds tags with search too, and says when nothing matches', async () => {
+      const { user } = setup([PASTA, SOUP, recipe('a', 'A'), recipe('b', 'B'), tagged(recipe('c', 'Curry'), 'vegetarian')])
+      await user.type(screen.getByRole('searchbox'), 'veg')
+      expect(titles()).toEqual(['Curry'])
+      await user.type(screen.getByRole('searchbox'), 'xyz')
+      expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+      expect(screen.getByText('No recipes match.')).toBeInTheDocument()
+    })
+  })
+
   it('invites you to add the first recipe when empty', async () => {
     const { user, onOpen } = setup([])
     expect(screen.getByText('No recipes yet.')).toBeInTheDocument()

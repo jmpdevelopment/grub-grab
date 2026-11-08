@@ -139,6 +139,7 @@ export default function App() {
     return (
       <RecipeEditor
         recipe={recipe}
+        knownTags={[...new Set(recipes.flatMap((r) => r.tags ?? []))].sort()}
         onCancel={() => setEditing(null)}
         onSave={async (input) => {
           const saved = recipe ? await b.updateRecipe(recipe.id, input) : await b.createRecipe(input)

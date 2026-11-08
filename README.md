@@ -2,7 +2,7 @@
 
 Recipes in, shopping list out.
 
-Keep your recipes and their ingredients in one place. Tick the ones you're cooking this week and Grub Grab builds a combined shopping list, adding up the quantities (garlic from two recipes → 7 cloves). You can tick items off in the shop or share the list as text. Two people can share one household, so you both see the same recipes and the same list.
+Keep your recipes and their ingredients in one place, tagged however suits you (soup, fish, quick…) so you can filter by tag. Tick the ones you're cooking this week and Grub Grab builds a combined shopping list, adding up the quantities (garlic from two recipes → 7 cloves). You can tick items off in the shop or share the list as text. Two people can share one household, so you both see the same recipes and the same list.
 
 It's a React web app that installs to the home screen on both iPhone and Android, backed by a small serverless API on AWS.
 
@@ -100,7 +100,7 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 | POST | `/household` | start a household (returns the existing one if the user already has one) |
 | POST | `/household/join` | `{code}`, max 5 attempts per user per hour (429 after that) |
 | POST | `/household/invite` | replace the invite code; the old one stops working |
-| GET / POST | `/recipes` | list / create |
+| GET / POST | `/recipes` | list / create. A recipe is `{title, servings, notes, tags, ingredients}`; tags are lower-cased and de-duplicated, max 20 of 30 characters |
 | GET / PUT / DELETE | `/recipes/{id}` | |
 | GET | `/list` | shopping list items |
 | POST | `/list/generate` | `{recipeIds, mode: "replace" \| "append"}` |

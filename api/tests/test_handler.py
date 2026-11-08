@@ -306,10 +306,28 @@ class TestRecipes:
             ({"ingredients": [{"name": "Egg", "quantity": 1_000_001}]}, "Invalid quantity: 1000001"),
             ({"ingredients": [{"name": "Egg", "quantity": True}]}, "Invalid quantity: True"),
             ({"ingredients": [{"name": "Egg", "quantity": [1]}]}, "Invalid quantity: [1]"),
+            ({"tags": "soup"}, "Tags must be a list"),
+            ({"tags": [5]}, "Tag must be text"),
+            ({"tags": ["x" * 31]}, "Tag is too long (max 30)"),
+            ({"tags": [f"t{n}" for n in range(21)]}, "Too many tags (max 20)"),
         ],
     )
     def test_validation(self, store, patch, msg):
         assert error(store, "POST /recipes", body={**PASTA, **patch}) == (400, msg)
+
+    def test_tags_are_cleaned_and_saved(self, store):
+        r = create(store, {"title": "Zurek", "tags": [" Soup ", "soup", "MEAT", "", "  ", "meat"]})
+        assert r["tags"] == ["soup", "meat"]  # trimmed, lower-cased, blanks and duplicates dropped, order kept
+        assert call(store, "GET /recipes/{id}", path={"id": r["id"]})[1]["tags"] == ["soup", "meat"]
+        status, updated = call(store, "PUT /recipes/{id}", path={"id": r["id"]}, body={"title": "Zurek", "tags": None})
+        assert status == 200 and updated["tags"] == []
+        assert create(store, {"title": "x", "tags": [f"t{n}" for n in range(20)]})["tags"][-1] == "t19"  # 20 is fine
+
+    def test_recipes_saved_before_tags_existed_read_as_untagged(self, store):
+        hh = store.household_for("alice")
+        store.table.put_item(Item={"PK": f"HH#{hh}", "SK": "RECIPE#old", "id": "old", "title": "Old", "ingredients": []})
+        assert call(store, "GET /recipes/{id}", path={"id": "old"})[1]["tags"] == []
+        assert call(store, "GET /recipes")[1][0]["tags"] == []
 
     def test_boundary_values_accepted(self, store):
         r = create(

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import type { Recipe } from '../types'
 
+const tagsOf = (r: Recipe) => r.tags ?? [] // recipes saved before tags existed have none
+
 interface Props {
   recipes: Recipe[]
   onOpen: (r: Recipe | null) => void
@@ -11,6 +13,7 @@ interface Props {
 export function RecipesView({ recipes, onOpen, onMakeList, hasList }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
+  const [tag, setTag] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   const toggle = (id: string) =>
@@ -32,10 +35,19 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList }: Props) {
     }
   }
 
+  // Every tag in use, most-used first, for the filter chips.
+  const counts = new Map<string, number>()
+  for (const r of recipes) for (const t of tagsOf(r)) counts.set(t, (counts.get(t) ?? 0) + 1)
+  const allTags = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t)
+  const activeTag = tag && counts.has(tag) ? tag : null // forget a filter whose last recipe lost the tag
+
   const q = query.trim().toLowerCase()
-  const shown = q
-    ? recipes.filter((r) => r.title.toLowerCase().includes(q) || r.ingredients.some((i) => i.name.toLowerCase().includes(q)))
-    : recipes
+  const matches = (r: Recipe) =>
+    !q ||
+    r.title.toLowerCase().includes(q) ||
+    r.ingredients.some((i) => i.name.toLowerCase().includes(q)) ||
+    tagsOf(r).some((t) => t.includes(q))
+  const shown = recipes.filter((r) => matches(r) && (!activeTag || tagsOf(r).includes(activeTag)))
 
   return (
     <>
@@ -48,6 +60,16 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList }: Props) {
           <input className="search" type="search" placeholder="Search recipes or ingredients" value={query} onChange={(e) => setQuery(e.target.value)} />
         )}
 
+        {allTags.length > 0 && (
+          <div className="tag-filter" role="group" aria-label="Filter by tag">
+            {allTags.map((t) => (
+              <button key={t} className="tag" aria-pressed={activeTag === t} onClick={() => setTag(activeTag === t ? null : t)}>
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
+
         {recipes.length === 0 ? (
           <div className="empty">
             <p>No recipes yet.</p>
@@ -56,6 +78,7 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList }: Props) {
         ) : (
           <>
             <p className="hint">Tick the recipes you're cooking, then make a shopping list.</p>
+            {shown.length === 0 && <p className="muted">No recipes match.</p>}
             <ul className="cards">
               {shown.map((r) => (
                 <li key={r.id} className={selected.has(r.id) ? 'card selected' : 'card'}>
@@ -68,6 +91,7 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList }: Props) {
                       {r.ingredients.length} ingredient{r.ingredients.length === 1 ? '' : 's'}
                       {r.servings ? ` · serves ${r.servings}` : ''}
                     </span>
+                    {tagsOf(r).length > 0 && <span className="card-tags">{tagsOf(r).join(' · ')}</span>}
                   </button>
                 </li>
               ))}
