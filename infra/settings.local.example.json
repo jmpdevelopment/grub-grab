@@ -1,5 +1,6 @@
 {
   "googleClientId": "123456789012-abc123.apps.googleusercontent.com",
   "domainName": "",
-  "hostedZoneId": ""
+  "hostedZoneId": "",
+  "region": "eu-west-2"
 }

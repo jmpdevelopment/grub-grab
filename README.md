@@ -88,7 +88,7 @@ For two people, the first person signs in with Google and opens **Settings**, wh
 
 **Cost:** at household scale this is effectively free. Everything is pay-per-request, and the Cognito, Lambda and DynamoDB free tiers cover it.
 
-**Region:** the default is `eu-west-2` (London). Set `CDK_DEFAULT_REGION` to change it.
+**Region:** the app deploys to `eu-west-2` (London) whatever your AWS CLI's default region is. To use another region, set `"region"` in `infra/settings.local.json` (or pass `-c region=...`), and create the Google client secret and the OAuth URLs in that region too.
 
 ## API
 

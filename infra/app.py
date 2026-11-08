@@ -14,7 +14,9 @@ local = json.loads(LOCAL_SETTINGS.read_text()) if LOCAL_SETTINGS.exists() else {
 
 app = cdk.App(context=local)
 account = os.environ.get("CDK_DEFAULT_ACCOUNT")
-region = os.environ.get("CDK_DEFAULT_REGION", "eu-west-2")
+# Pinned here rather than taken from CDK_DEFAULT_REGION: the cdk CLI always sets that variable from your
+# AWS config, falling back to us-east-1, which would silently deploy somewhere the secret doesn't exist.
+region = app.node.try_get_context("region") or "eu-west-2"
 
 site_domain = SiteDomain.from_context(app)
 certificate = None

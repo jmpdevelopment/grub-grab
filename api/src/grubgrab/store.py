@@ -79,16 +79,22 @@ class Store:
         if profile:
             return self.get_household(profile["householdId"])
 
+        # Build the household completely before pointing the user at it, so any request that finds the
+        # profile also finds its invite code. (The app's first screen sends /me, /recipes and /list at once.)
         household_id = uuid.uuid4().hex
-        # Claim the user first: if a parallel first request already did, use its household.
-        if not self._put_if_absent({**key, "householdId": household_id}):
-            return self.get_or_create_household(user_sub)
         code = self._claim_invite_code(household_id)
-        self.table.put_item(Item={"PK": f"HH#{household_id}", "SK": "META", "inviteCode": code, "createdAt": self._now()})
+        meta_key = {"PK": f"HH#{household_id}", "SK": "META"}
+        self.table.put_item(Item={**meta_key, "inviteCode": code, "createdAt": self._now()})
+        if not self._put_if_absent({**key, "householdId": household_id}):
+            # A parallel first request claimed the user: drop ours and use theirs.
+            self.table.delete_item(Key={"PK": f"INVITE#{code}", "SK": "INVITE"})
+            self.table.delete_item(Key=meta_key)
+            return self.get_or_create_household(user_sub)
         return {"householdId": household_id, "inviteCode": code}
 
     def get_household(self, household_id: str) -> dict:
-        meta = self.table.get_item(Key={"PK": f"HH#{household_id}", "SK": "META"}).get("Item") or {}
+        key = {"PK": f"HH#{household_id}", "SK": "META"}
+        meta = self.table.get_item(Key=key, ConsistentRead=True).get("Item") or {}
         return {"householdId": household_id, "inviteCode": meta.get("inviteCode")}
 
     def record_join_attempt(self, user_sub: str) -> int:

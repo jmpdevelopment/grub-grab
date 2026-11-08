@@ -72,8 +72,33 @@ class TestHouseholds:
 
     def test_parallel_first_request_uses_existing_household(self, table):
         Store(table).table.put_item(Item={"PK": "HH#theirs", "SK": "META", "inviteCode": "ZZZZZZ"})
-        s = Store(LateProfileTable(table, "theirs"))
+        s = Store(LateProfileTable(table, "theirs"), codes("LOSERCODE2"))
         assert s.get_or_create_household("alice") == {"householdId": "theirs", "inviteCode": "ZZZZZZ"}
+        # The losing request cleans up the household it built: no orphan META, and its code doesn't work.
+        metas = [i for i in table.scan()["Items"] if i["SK"] == "META"]
+        assert [m["PK"] for m in metas] == ["HH#theirs"]
+        assert s.join_household("bob", "LOSERCODE2") is None
+
+    def test_profile_never_points_at_a_half_built_household(self, table):
+        """Regression: a request that sees the new profile must also see the invite code.
+
+        On first sign-in the app sends /me, /recipes and /list together. Previously the profile was written
+        before the household's META, so /me could return inviteCode None and Settings showed '…'.
+        """
+        seen = []
+
+        class WatchProfileWrites:
+            def put_item(self, **kwargs):
+                result = table.put_item(**kwargs)
+                if kwargs["Item"]["SK"] == "PROFILE":  # a parallel request reads right after the profile lands
+                    seen.append(Store(table).get_or_create_household("alice"))
+                return result
+
+            def __getattr__(self, name):
+                return getattr(table, name)
+
+        created = Store(WatchProfileWrites(), codes("FRESHCODE2")).get_or_create_household("alice")
+        assert seen == [created] and created["inviteCode"] == "FRESHCODE2"
 
     def test_household_without_meta(self, store):
         assert store.get_household("missing") == {"householdId": "missing", "inviteCode": None}
