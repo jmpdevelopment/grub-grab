@@ -377,6 +377,29 @@ describe('cloud mode', () => {
       expect(localStorage.getItem('gg.tokens')).not.toBeNull() // still signed in for when the signal is back
     })
 
+    it('recipes picked for a list wait under "To cook" until unticked, and the household keeps it', async () => {
+      const SOUP: Recipe = { id: 's', title: 'Soup', servings: null, notes: '', ingredients: [{ name: 'Leek', quantity: 1, unit: '' }] }
+      const { state } = fakeApi({ recipes: [PASTA, SOUP] })
+      const user = await renderApp()
+      await user.click(within(await screen.findByText('Pasta').then((el) => el.closest('li')!)).getByRole('checkbox'))
+      await user.click(screen.getByRole('button', { name: 'Make list (1)' }))
+      await user.click(tab(/Recipes/))
+      expect(within(screen.getByRole('region', { name: 'To cook' })).getByText('Pasta')).toBeInTheDocument()
+      expect(state.household.toCook).toEqual(['p'])
+
+      await user.click(screen.getByRole('checkbox', { name: 'To cook: Pasta' })) // cooked it
+      expect(screen.queryByRole('region', { name: 'To cook' })).not.toBeInTheDocument()
+      await waitFor(() => expect(state.household.toCook).toEqual([]))
+    })
+
+    it('if unticking fails, the recipe stays under "To cook"', async () => {
+      fakeApi({ recipes: [PASTA], household: { householdId: 'h1', inviteCode: 'ABCDEFGH23', toCook: ['p'] } }, { [`DELETE ${CFG.apiUrl}household/to-cook/:id`]: fail() })
+      const user = await renderApp()
+      await user.click(await screen.findByRole('checkbox', { name: 'To cook: Pasta' }))
+      await screen.findByRole('alert')
+      expect(screen.getByRole('checkbox', { name: 'To cook: Pasta' })).toBeChecked()
+    })
+
     describe('problem reports', () => {
       it('report a problem from Settings, with recent steps and the app version', async () => {
         const { state } = fakeApi({ recipes: [PASTA] })

@@ -264,3 +264,8 @@ body { overscroll-behavior-y: contain; } /* our pull replaces the browser's own 
 .sheet-done { text-align: center; padding: 12px 0 4px; }
 .sheet-done p { font-size: 1.05rem; margin: 0 0 16px; }
 .report-link { background: none; border: 0; padding: 0; font: inherit; color: var(--green); text-decoration: underline; cursor: pointer; }
+
+/* ---- "To cook": recipes picked for a list, until unticked ---- */
+.section-title { margin: 6px 0 4px; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+section + .section-title { margin-top: 18px; }
+.card.to-cook { border-color: var(--green); background: var(--green-soft); }

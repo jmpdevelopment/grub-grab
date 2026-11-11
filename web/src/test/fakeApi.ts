@@ -16,6 +16,7 @@ export interface ApiState {
     language?: string
     recipeLanguage?: string
     aisles?: Record<string, string>
+    toCook?: string[]
   }
   requests: AccessRequest[]
   feedback: FeedbackBody[]
@@ -93,6 +94,7 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
     [`POST ${API}/list/generate`]: (_u, init) => {
       const { recipeIds } = body(init)
       state.items = aggregate(state.recipes.filter((r) => recipeIds.includes(r.id))).map((i) => ({ ...i, id: id(), checked: false }))
+      state.household = { ...state.household, toCook: [...new Set([...(state.household.toCook ?? []), ...recipeIds])].sort() }
       return json(state.items)
     },
     [`POST ${API}/list/items`]: (_u, init) => {
@@ -112,6 +114,12 @@ export function fakeApi(initial: Partial<ApiState> = {}, overrides: Record<strin
     new Proxy(routes, {
       get(target, key: string) {
         if (key in target) return target[key]
+        const cooked = key.match(/^DELETE .+\/household\/to-cook\/([^/]+)$/)
+        if (cooked)
+          return target[`DELETE ${API}/household/to-cook/:id`] ?? (() => {
+            state.household = { ...state.household, toCook: (state.household.toCook ?? []).filter((r) => r !== cooked[1]) }
+            return json(state.household)
+          })
         const decision = key.match(/^POST .+\/admin\/requests\/([^/]+)\/(approve|decline)$/)
         if (decision)
           return () => {

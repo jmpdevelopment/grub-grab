@@ -206,6 +206,7 @@ def _generate_list(store: Store, hh: str, data: dict) -> list[dict]:
     if kept + len(new_items) > MAX_LIST_ITEMS:
         raise ApiError(409, "list_too_long", f"That would make the list longer than {MAX_LIST_ITEMS} items", max=MAX_LIST_ITEMS)
     store.replace_items(hh, [i["id"] for i in remove], new_items)
+    store.add_to_cook(hh, [r["id"] for r in recipes])  # they show under "To cook" until unticked
     return store.list_items(hh)
 
 
@@ -375,6 +376,9 @@ def route(event: dict, store: Store) -> dict:
         return _resp(200, store.set_recipe_language(hh, _language(_body(event))))
     if route_key == "PUT /household/aisles":
         return _set_aisle(store, hh, _body(event))
+    if route_key == "DELETE /household/to-cook/{id}":  # unticked: cooked, or no longer planned
+        store.remove_to_cook(hh, params["id"])
+        return _resp(200, store.get_household(hh))
     if route_key == "POST /household/invite":
         return _resp(200, store.rotate_invite(hh))
 

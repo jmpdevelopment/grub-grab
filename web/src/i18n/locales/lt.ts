@@ -37,6 +37,10 @@ export const lt: Messages = {
   'recipes.empty': 'Receptų dar nėra.',
   'recipes.addFirst': 'Pridėti pirmą receptą',
   'recipes.hint': 'Pažymėkite receptus, kuriuos gaminsite, ir sudarykite pirkinių sąrašą.',
+  'recipes.toCook': 'Laukia gaminimo',
+  'recipes.toCookHint': 'Atžymėkite receptą, kai jį pagaminsite.',
+  'recipes.all': 'Visi receptai',
+  'recipes.toCookItem': 'Laukia gaminimo: {title}',
   'recipes.noMatch': 'Atitinkančių receptų nėra.',
   'recipes.ingredientCount': {
     one: '{count} ingredientas',

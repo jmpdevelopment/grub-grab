@@ -6,7 +6,8 @@ Key layout:
   PK=USER#<sub>        SK=JOINS#<window>   -> attempts, expiresAt (TTL)  — join rate limit
   PK=INVITE#<code>     SK=INVITE           -> householdId
   PK=HH#<id>           SK=META             -> inviteCode, createdAt, recipeLanguage (what imports write in),
-                                              aisles ({item name: aisle} — where the household moved items)
+                                              aisles ({item name: aisle} — where the household moved items),
+                                              toCook (set of recipe ids picked for a list, until unticked)
   PK=HH#<id>           SK=RECIPE#<id>      -> title, servings, ingredients, notes
   PK=HH#<id>           SK=ITEM#<id>        -> name, quantity, unit, checked, recipes, aisle (if known)
   PK=ACCESS            SK=REQ#<username>   -> email, name, status (pending/approved/declined), requestedAt
@@ -122,7 +123,7 @@ class Store:
             self.table.delete_item(Key={"PK": f"INVITE#{code}", "SK": "INVITE"})
             self.table.delete_item(Key=meta_key)
             return self.create_household(user_sub, recipe_language)
-        return {"householdId": household_id, "inviteCode": code, "recipeLanguage": recipe_language, "aisles": {}}
+        return {"householdId": household_id, "inviteCode": code, "recipeLanguage": recipe_language, "aisles": {}, "toCook": []}
 
     def get_household(self, household_id: str) -> dict:
         key = {"PK": f"HH#{household_id}", "SK": "META"}
@@ -133,7 +134,25 @@ class Store:
             "inviteCode": meta.get("inviteCode"),
             "recipeLanguage": meta.get("recipeLanguage", "en"),
             "aisles": meta.get("aisles", {}),
+            "toCook": sorted(meta.get("toCook", set())),
         }
+
+    def add_to_cook(self, household_id: str, recipe_ids: list[str]) -> None:
+        """Recipes picked for the shopping list: shown under "To cook" until someone unticks them."""
+        if recipe_ids:
+            self.table.update_item(
+                Key={"PK": f"HH#{household_id}", "SK": "META"},
+                UpdateExpression="ADD toCook :ids",
+                ExpressionAttributeValues={":ids": set(recipe_ids)},
+            )
+
+    def remove_to_cook(self, household_id: str, recipe_id: str) -> None:
+        """Cooked (or no longer planned). DynamoDB drops the set when its last recipe goes."""
+        self.table.update_item(
+            Key={"PK": f"HH#{household_id}", "SK": "META"},
+            UpdateExpression="DELETE toCook :ids",
+            ExpressionAttributeValues={":ids": {recipe_id}},
+        )
 
     def set_aisle(self, household_id: str, name: str, aisle: str) -> bool:
         """Remember the aisle for an item name (one entry, so two people moving items don't undo each other).
@@ -484,6 +503,7 @@ class Store:
 
     def delete_recipe(self, household_id: str, recipe_id: str) -> None:
         self.table.delete_item(Key={"PK": f"HH#{household_id}", "SK": f"RECIPE#{recipe_id}"})
+        self.remove_to_cook(household_id, recipe_id)
 
     # ---- shopping list -------------------------------------------------------
 

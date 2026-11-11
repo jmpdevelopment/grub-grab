@@ -13,9 +13,12 @@ interface Props {
   hasList: boolean
   /** True until the first load has arrived: show placeholders, not "No recipes yet". */
   loading?: boolean
+  /** Recipes picked for a shopping list: kept at the top, ticked, until someone unticks them. */
+  toCook?: string[]
+  onCooked?: (recipe: Recipe) => void
 }
 
-export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = false }: Props) {
+export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = false, toCook = [], onCooked }: Props) {
   const { t } = useI18n()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
@@ -54,6 +57,41 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
     r.ingredients.some((i) => i.name.toLowerCase().includes(q)) ||
     tagsOf(r).some((tag) => tag.includes(q))
   const shown = recipes.filter((r) => matches(r) && (!activeTag || tagsOf(r).includes(activeTag)))
+  const cooking = new Set(toCook)
+  const toCookShown = shown.filter((r) => cooking.has(r.id))
+  const rest = shown.filter((r) => !cooking.has(r.id))
+
+  const card = (r: Recipe, planned: boolean) => (
+    <li key={r.id} className={planned ? 'card to-cook' : selected.has(r.id) ? 'card selected' : 'card'}>
+      <label className="check">
+        {planned ? (
+          // Ticked while it's still to cook; unticking takes it off (cooked, or not planned any more).
+          <input type="checkbox" checked aria-label={t('recipes.toCookItem', { title: r.title })} onChange={() => onCooked?.(r)} />
+        ) : (
+          <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
+        )}
+      </label>
+      <button className="card-body" onClick={() => onOpen(r)}>
+        <strong>{r.title}</strong>
+        <span className="muted">
+          {t('recipes.ingredientCount', { count: r.ingredients.length })}
+          {r.servings ? ` · ${t('recipes.serves', { count: r.servings })}` : ''}
+        </span>
+        {tagsOf(r).length > 0 && <span className="card-tags">{tagsOf(r).join(' · ')}</span>}
+      </button>
+      {safeHref(r.link) && (
+        <a
+          className="card-link"
+          href={safeHref(r.link)}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={t('recipes.openPage', { title: r.title })}
+        >
+          ↗
+        </a>
+      )}
+    </li>
+  )
 
   return (
     <>
@@ -85,36 +123,17 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
           </div>
         ) : (
           <>
+            {toCookShown.length > 0 && (
+              <section aria-labelledby="to-cook">
+                <h2 id="to-cook" className="section-title">{t('recipes.toCook')}</h2>
+                <p className="hint">{t('recipes.toCookHint')}</p>
+                <ul className="cards">{toCookShown.map((r) => card(r, true))}</ul>
+              </section>
+            )}
+            {toCookShown.length > 0 && <h2 className="section-title">{t('recipes.all')}</h2>}
             <p className="hint">{t('recipes.hint')}</p>
             {shown.length === 0 && <p className="muted">{t('recipes.noMatch')}</p>}
-            <ul className="cards">
-              {shown.map((r) => (
-                <li key={r.id} className={selected.has(r.id) ? 'card selected' : 'card'}>
-                  <label className="check">
-                    <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
-                  </label>
-                  <button className="card-body" onClick={() => onOpen(r)}>
-                    <strong>{r.title}</strong>
-                    <span className="muted">
-                      {t('recipes.ingredientCount', { count: r.ingredients.length })}
-                      {r.servings ? ` · ${t('recipes.serves', { count: r.servings })}` : ''}
-                    </span>
-                    {tagsOf(r).length > 0 && <span className="card-tags">{tagsOf(r).join(' · ')}</span>}
-                  </button>
-                  {safeHref(r.link) && (
-                    <a
-                      className="card-link"
-                      href={safeHref(r.link)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label={t('recipes.openPage', { title: r.title })}
-                    >
-                      ↗
-                    </a>
-                  )}
-                </li>
-              ))}
-            </ul>
+            <ul className="cards">{rest.map((r) => card(r, false))}</ul>
           </>
         )}
       </div>

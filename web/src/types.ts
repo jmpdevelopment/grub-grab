@@ -63,6 +63,8 @@ export interface Household {
   recipeLanguage?: string
   /** Where the household moved list items: {item name: aisle}, applied from then on. */
   aisles?: Record<string, string>
+  /** Recipes picked for a shopping list, shown under "To cook" until someone unticks them. */
+  toCook?: string[]
   /** This person's app language, saved on their account (absent until first saved). */
   language?: string
   /** Admins approve sign-up requests; only present for them. */
@@ -88,6 +90,8 @@ export interface Backend {
   rotateInvite(): Promise<Household>
   /** Put this item (by name) in another aisle, for the whole household from now on. */
   setAisle(name: string, aisle: string): Promise<Household>
+  /** Take a recipe off "To cook" (it's been cooked, or isn't planned any more). */
+  removeToCook(recipeId: string): Promise<Household>
   importRecipe(link: string): Promise<ImportedRecipe>
   /** Problem reports, error reports and import outcomes. Local mode has nowhere to send them. */
   sendFeedback(body: FeedbackBody): Promise<void>

@@ -45,6 +45,7 @@ describe('CloudBackend', () => {
       [`POST ${API}/household/join`]: ok({ householdId: 'h2', inviteCode: 'XYZ234' }),
       [`POST ${API}/household/invite`]: ok({ householdId: 'h', inviteCode: 'NEWCODE234' }),
       [`PUT ${API}/household/aisles`]: ok({ householdId: 'h', inviteCode: 'ABC234', aisles: { tahini: 'pantry' } }),
+      [`DELETE ${API}/household/to-cook/r1`]: ok({ householdId: 'h', inviteCode: 'ABC234', toCook: [] }),
       [`GET ${API}/recipes`]: ok([]),
       [`POST ${API}/recipes`]: ok({ id: 'r1' }),
       [`PUT ${API}/recipes/r1`]: ok({ id: 'r1' }),
@@ -72,6 +73,7 @@ describe('CloudBackend', () => {
     expect(await b.joinHousehold('xyz234')).toEqual({ householdId: 'h2', inviteCode: 'XYZ234' })
     expect(await b.rotateInvite()).toEqual({ householdId: 'h', inviteCode: 'NEWCODE234' })
     expect((await b.setAisle('Tahini', 'pantry')).aisles).toEqual({ tahini: 'pantry' })
+    expect((await b.removeToCook('r1')).toCook).toEqual([])
     await b.listRecipes()
     await b.createRecipe(PASTA)
     await b.updateRecipe('r1', CURRY)
@@ -99,6 +101,7 @@ describe('CloudBackend', () => {
       'POST /household/join',
       'POST /household/invite',
       'PUT /household/aisles',
+      'DELETE /household/to-cook/r1',
       'GET /recipes',
       'POST /recipes',
       'PUT /recipes/r1',
@@ -199,7 +202,7 @@ describe('LocalBackend', () => {
   it('has a fixed local household and cannot join others', async () => {
     const b = new LocalBackend()
     expect(b.mode).toBe('local')
-    const local = { householdId: 'local', inviteCode: null, aisles: {} }
+    const local = { householdId: 'local', inviteCode: null, aisles: {}, toCook: [] }
     expect(await b.me()).toEqual(local)
     expect(await b.createHousehold()).toEqual(local)
     expect(await b.saveLanguage()).toBeUndefined()
@@ -214,6 +217,20 @@ describe('LocalBackend', () => {
     expect(await b.declineAllPending()).toBe(0)
     await expect(b.joinHousehold()).rejects.toThrow('Sharing needs the cloud version')
     await expect(b.rotateInvite()).rejects.toThrow('Sharing needs the cloud version')
+  })
+
+  it('keeps picked recipes under "To cook" until unticked, like the API', async () => {
+    const b = new LocalBackend()
+    const soup = await b.createRecipe({ title: 'Soup', servings: null, notes: '', ingredients: [{ name: 'leek', quantity: 1, unit: '' }] })
+    const stew = await b.createRecipe({ title: 'Stew', servings: null, notes: '', ingredients: [] })
+    await b.generateList([soup.id], 'replace')
+    await b.generateList([stew.id, soup.id], 'append')
+    expect((await b.me()).toCook).toEqual([soup.id, stew.id].sort())
+    expect((await b.removeToCook(soup.id)).toCook).toEqual([stew.id])
+    await b.deleteRecipe(stew.id)
+    expect((await b.me()).toCook).toEqual([])
+    localStorage.setItem('gg.local', JSON.stringify({ toCook: 'nope' }))
+    expect((await b.me()).toCook).toEqual([])
   })
 
   it('remembers where items were moved, on this device', async () => {

@@ -304,7 +304,17 @@ function GrubGrab() {
               const list = await guard(() => b.generateList(ids, mode))
               if (list === FAILED) return
               setItems(list)
+              // The server keeps them under "To cook" too; show that without waiting for a refresh.
+              setHousehold((h) => ({ ...h!, toCook: [...new Set([...(h!.toCook ?? []), ...ids])].sort() }))
               setTab('list')
+            }}
+            toCook={household?.toCook}
+            onCooked={async (recipe) => {
+              // Optimistic: off the list at once, back if the request fails.
+              const before = household?.toCook
+              setHousehold((h) => ({ ...h!, toCook: h!.toCook!.filter((id) => id !== recipe.id) })) // only shown when there's a list
+              const updated = await guard(() => b.removeToCook(recipe.id))
+              setHousehold((h) => ({ ...h!, toCook: updated === FAILED ? before : updated.toCook }))
             }}
           />
         )}

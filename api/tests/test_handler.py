@@ -493,6 +493,30 @@ class TestGenerate:
         assert unticked["lemons"]["quantity"] == 2  # manual item survives
         assert len(items) == len(unticked) + len(ticked)
 
+    def test_picked_recipes_wait_under_to_cook_until_unticked(self, store):
+        p, c, s = create(store, PASTA), create(store, CURRY), create(store, {"title": "Soup", "ingredients": []})
+        call(store, "POST /list/generate", body={"recipeIds": [p["id"]]})
+        call(store, "POST /list/generate", body={"recipeIds": [c["id"]], "mode": "replace"})  # a new list keeps them
+        call(store, "POST /list/generate", body={"recipeIds": [s["id"], p["id"]], "mode": "append"})
+        assert call(store, "GET /me")[1]["toCook"] == sorted([p["id"], c["id"], s["id"]])
+        status, household = call(store, "DELETE /household/to-cook/{id}", path={"id": c["id"]})  # cooked it
+        assert status == 200 and household["toCook"] == sorted([p["id"], s["id"]])
+        call(store, "DELETE /household/to-cook/{id}", path={"id": "never-picked"})  # nothing to do, no error
+        call(store, "DELETE /recipes/{id}", path={"id": s["id"]})  # a deleted recipe goes from the list too
+        assert call(store, "GET /me")[1]["toCook"] == [p["id"]]
+
+    def test_to_cook_is_shared_by_the_household_and_no_one_else(self, store):
+        p = create(store, PASTA)
+        call(store, "POST /list/generate", body={"recipeIds": [p["id"]]})
+        assert call(store, "GET /me", sub="bob")[1]["toCook"] == []  # another household
+        call(store, "DELETE /household/to-cook/{id}", sub="bob", path={"id": p["id"]})  # can't touch it
+        assert call(store, "GET /me")[1]["toCook"] == [p["id"]]
+
+    def test_a_failed_list_marks_nothing(self, store):
+        p = create(store, PASTA)
+        assert call(store, "POST /list/generate", body={"recipeIds": [p["id"], "missing"]})[0] == 404
+        assert call(store, "GET /me")[1]["toCook"] == []
+
     def test_append_to_empty_list(self, store):
         p = create(store, PASTA)
         _, items = call(store, "POST /list/generate", body={"recipeIds": [p["id"]], "mode": "append"})

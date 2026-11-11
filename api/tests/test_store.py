@@ -92,7 +92,7 @@ class TestHouseholds:
     def test_parallel_first_request_uses_existing_household(self, table):
         Store(table).table.put_item(Item={"PK": "HH#theirs", "SK": "META", "inviteCode": "ZZZZZZ"})
         s = Store(LateProfileTable(table, "theirs"), codes("LOSERCODE2"))
-        assert s.create_household("alice") == {"householdId": "theirs", "inviteCode": "ZZZZZZ", "recipeLanguage": "en", "aisles": {}}
+        assert s.create_household("alice") == {"householdId": "theirs", "inviteCode": "ZZZZZZ", "recipeLanguage": "en", "aisles": {}, "toCook": []}
         # The losing request cleans up the household it built: no orphan META, and its code doesn't work.
         metas = [i for i in table.scan()["Items"] if i["SK"] == "META"]
         assert [m["PK"] for m in metas] == ["HH#theirs"]
@@ -120,7 +120,7 @@ class TestHouseholds:
         assert seen == [created] and created["inviteCode"] == "FRESHCODE2"
 
     def test_household_without_meta(self, store):
-        assert store.get_household("missing") == {"householdId": "missing", "inviteCode": None, "recipeLanguage": "en", "aisles": {}}
+        assert store.get_household("missing") == {"householdId": "missing", "inviteCode": None, "recipeLanguage": "en", "aisles": {}, "toCook": []}
 
     def test_join(self, store):
         hh = store.create_household("alice")
@@ -219,12 +219,20 @@ class TestAisles:
         assert store.get_household(hh)["aisles"] == {"leek": "produce", "kefir": "dairy"}
 
 
+class TestToCook:
+    def test_adding_nothing_changes_nothing(self, store):
+        hh = store.create_household("alice")["householdId"]
+        store.add_to_cook(hh, [])
+        store.add_to_cook(hh, ["r2", "r1", "r2"])
+        assert store.get_household(hh)["toCook"] == ["r1", "r2"]
+
+
 class TestRotateInvite:
     def test_new_code_works_and_old_one_stops(self, table):
         s = Store(table, codes("OLDOLDOLD2", "NEWNEWNEW2"))
         hh = s.create_household("alice")
         rotated = s.rotate_invite(hh["householdId"])
-        assert rotated == {"householdId": hh["householdId"], "inviteCode": "NEWNEWNEW2", "recipeLanguage": "en", "aisles": {}}
+        assert rotated == {"householdId": hh["householdId"], "inviteCode": "NEWNEWNEW2", "recipeLanguage": "en", "aisles": {}, "toCook": []}
         assert s.get_household(hh["householdId"])["inviteCode"] == "NEWNEWNEW2"
         assert s.join_household("bob", "OLDOLDOLD2") is None
         assert s.join_household("bob", "NEWNEWNEW2")["householdId"] == hh["householdId"]

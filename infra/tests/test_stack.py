@@ -420,6 +420,7 @@ def test_problem_reports_have_their_own_table(template):
     env = functions(template)["grubgrab.handler.lambda_handler"]["Environment"]["Variables"]
     assert env["FEEDBACK_TABLE"] == {"Ref": name}
     template.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "POST /feedback", "AuthorizationType": "JWT"})
+    template.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "DELETE /household/to-cook/{id}", "AuthorizationType": "JWT"})
     # Only the API writes reports; the import worker and sign-up trigger can't touch them.
     for fn, props_ in functions(template).items():
         if fn != "grubgrab.handler.lambda_handler":

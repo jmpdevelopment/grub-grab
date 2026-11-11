@@ -15,14 +15,55 @@ const recipe = (id: string, title: string, ingredients: string[] = [], servings:
 const PASTA = recipe('p', 'Pasta', ['Spaghetti', 'Garlic'], 2)
 const SOUP = recipe('s', 'Soup', ['Leek'])
 
-function setup(recipes: Recipe[], hasList = false) {
+function setup(recipes: Recipe[], hasList = false, toCook?: string[]) {
   const onOpen = vi.fn()
   const onMakeList = vi.fn().mockResolvedValue(undefined)
-  render(<RecipesView recipes={recipes} hasList={hasList} onOpen={onOpen} onMakeList={onMakeList} />)
-  return { user: userEvent.setup(), onOpen, onMakeList }
+  const onCooked = vi.fn()
+  render(<RecipesView recipes={recipes} hasList={hasList} onOpen={onOpen} onMakeList={onMakeList} toCook={toCook} onCooked={onCooked} />)
+  return { user: userEvent.setup(), onOpen, onMakeList, onCooked }
 }
 
 const tagged = (r: Recipe, ...tags: string[]): Recipe => ({ ...r, tags })
+
+describe('RecipesView: to cook', () => {
+  const titles = (list: HTMLElement) => within(list).getAllByRole('listitem').map((li) => li.querySelector('strong')!.textContent)
+
+  it('picked recipes wait at the top, ticked, until unticked', async () => {
+    const curry = recipe('c', 'Curry')
+    const { user, onCooked, onOpen } = setup([PASTA, SOUP, curry], true, [curry.id, PASTA.id, 'deleted-since'])
+    const section = screen.getByRole('region', { name: 'To cook' })
+    expect(titles(within(section).getByRole('list'))).toEqual(['Pasta', 'Curry'])
+    expect(screen.getByRole('heading', { name: 'All recipes' })).toBeInTheDocument()
+    const all = screen.getAllByRole('list').at(-1)!
+    expect(titles(all)).toEqual(['Soup']) // moved, not shown twice
+    const box = screen.getByRole('checkbox', { name: 'To cook: Curry' })
+    expect(box).toBeChecked()
+    await user.click(box)
+    expect(onCooked).toHaveBeenCalledWith(curry)
+    await user.click(within(section).getByText('Pasta'))
+    expect(onOpen).toHaveBeenCalledWith(PASTA) // still opens like any recipe
+  })
+
+  it('no section when nothing is waiting, or nothing waiting matches the search', async () => {
+    setup([PASTA, SOUP], false, [])
+    expect(screen.queryByRole('region', { name: 'To cook' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'All recipes' })).not.toBeInTheDocument()
+  })
+
+  it('search and tags filter it too', async () => {
+    const { user } = setup([tagged(PASTA, 'pasta'), SOUP, recipe('c', 'Curry'), recipe('d', 'Dal'), recipe('e', 'Eggs')], false, [PASTA.id])
+    await user.click(screen.getByRole('button', { name: 'pasta' }))
+    expect(screen.getByRole('region', { name: 'To cook' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'pasta' }))
+    await user.type(screen.getByPlaceholderText('Search recipes or ingredients'), 'soup')
+    expect(screen.queryByRole('region', { name: 'To cook' })).not.toBeInTheDocument()
+  })
+
+  it('works without an untick handler', async () => {
+    render(<RecipesView recipes={[PASTA]} hasList={false} onOpen={vi.fn()} onMakeList={vi.fn()} toCook={[PASTA.id]} />)
+    await userEvent.setup().click(screen.getByRole('checkbox', { name: 'To cook: Pasta' }))
+  })
+})
 
 describe('RecipesView', () => {
   it('has a one-tap link to the recipe page, only for safe web links', () => {

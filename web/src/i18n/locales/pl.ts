@@ -37,6 +37,10 @@ export const pl: Messages = {
   'recipes.empty': 'Nie masz jeszcze przepisów.',
   'recipes.addFirst': 'Dodaj pierwszy przepis',
   'recipes.hint': 'Zaznacz przepisy, które gotujesz, i zrób z nich listę zakupów.',
+  'recipes.toCook': 'Do ugotowania',
+  'recipes.toCookHint': 'Odznacz przepis, gdy już go ugotujesz.',
+  'recipes.all': 'Wszystkie przepisy',
+  'recipes.toCookItem': 'Do ugotowania: {title}',
   'recipes.noMatch': 'Brak pasujących przepisów.',
   'recipes.ingredientCount': {
     one: '{count} składnik',

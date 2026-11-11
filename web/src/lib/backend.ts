@@ -78,6 +78,7 @@ export class CloudBackend implements Backend {
   joinHousehold = (code: string) => this.req<Household>('POST', '/household/join', { code })
   rotateInvite = () => this.req<Household>('POST', '/household/invite')
   setAisle = (name: string, aisle: string) => this.req<Household>('PUT', '/household/aisles', { name, aisle })
+  removeToCook = (recipeId: string) => this.req<Household>('DELETE', `/household/to-cook/${encodeURIComponent(recipeId)}`)
   /** Starts the AI import (a background job on the server), then checks on it until it's finished. */
   /** The server writes the recipe in the household's recipe language. */
   importRecipe = async (link: string): Promise<ImportedRecipe> => {
@@ -129,6 +130,7 @@ interface LocalData {
   recipes: Recipe[]
   items: ListItem[]
   aisles: Record<string, string>
+  toCook: string[]
 }
 
 const uid = () => crypto.randomUUID().replace(/-/g, '')
@@ -149,6 +151,7 @@ export class LocalBackend implements Backend {
       recipes: Array.isArray(data?.recipes) ? data.recipes : [],
       items: Array.isArray(data?.items) ? data.items : [],
       aisles: data?.aisles && typeof data.aisles === 'object' && !Array.isArray(data.aisles) ? data.aisles : {},
+      toCook: Array.isArray(data?.toCook) ? data.toCook : [],
     }
   }
   private save(d: LocalData) {
@@ -156,11 +159,18 @@ export class LocalBackend implements Backend {
   }
 
   async me(): Promise<Household> {
-    return { householdId: 'local', inviteCode: null, aisles: this.load().aisles }
+    const d = this.load()
+    return { householdId: 'local', inviteCode: null, aisles: d.aisles, toCook: d.toCook }
   }
   async setAisle(name: string, aisle: string): Promise<Household> {
     const d = this.load()
     d.aisles[aisleKey(name)] = aisle
+    this.save(d)
+    return this.me()
+  }
+  async removeToCook(recipeId: string): Promise<Household> {
+    const d = this.load()
+    d.toCook = d.toCook.filter((id) => id !== recipeId)
     this.save(d)
     return this.me()
   }
@@ -213,6 +223,7 @@ export class LocalBackend implements Backend {
   async deleteRecipe(id: string) {
     const d = this.load()
     d.recipes = d.recipes.filter((x) => x.id !== id)
+    d.toCook = d.toCook.filter((x) => x !== id)
     this.save(d)
   }
   async getList() {
@@ -231,6 +242,7 @@ export class LocalBackend implements Backend {
     const unticked = mode === 'append' ? d.items.filter((i) => !i.checked) : []
     const fresh = combine([...unticked, ...aggregate(recipes)]).map((i) => ({ ...i, id: uid(), checked: false }))
     d.items = [...ticked, ...fresh]
+    d.toCook = [...new Set([...d.toCook, ...recipes.map((r) => r.id)])].sort() // as the API does
     this.save(d)
     return sortItems(d.items)
   }
