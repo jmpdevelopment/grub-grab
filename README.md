@@ -198,7 +198,7 @@ Every route needs a Cognito access token (`Authorization: Bearer …`) and is sc
 ## Development
 
 ```bash
-cd api && pip install -r requirements-dev.txt && pytest
+cd api && pip install -r requirements-dev.txt && python -m pyflakes src tests && pytest
 cd web && npm run build && npm run lint
 cd infra && pytest -q tests && cdk synth -c googleClientId=dummy
 ```

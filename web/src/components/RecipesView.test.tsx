@@ -59,10 +59,6 @@ describe('RecipesView: to cook', () => {
     expect(screen.queryByRole('region', { name: 'To cook' })).not.toBeInTheDocument()
   })
 
-  it('works without an untick handler', async () => {
-    render(<RecipesView recipes={[PASTA]} hasList={false} onOpen={vi.fn()} onMakeList={vi.fn()} toCook={[PASTA.id]} />)
-    await userEvent.setup().click(screen.getByRole('checkbox', { name: 'To cook: Pasta' }))
-  })
 })
 
 describe('RecipesView', () => {
@@ -106,7 +102,7 @@ describe('RecipesView', () => {
 
     it('forgets a filter once no recipe has that tag any more', async () => {
       const onOpen = vi.fn()
-      const props = { hasList: false, onOpen, onMakeList: vi.fn() }
+      const props = { hasList: false, onOpen, onMakeList: vi.fn(), onCooked: vi.fn() }
       const { rerender } = render(<RecipesView recipes={[tagged(SOUP, 'soup'), tagged(PASTA, 'pasta')]} {...props} />)
       await userEvent.setup().click(chip('soup'))
       expect(titles()).toEqual(['Soup'])
@@ -125,7 +121,7 @@ describe('RecipesView', () => {
   })
 
   it('shows placeholders, not "No recipes yet", while loading', () => {
-    render(<RecipesView recipes={[]} loading hasList={false} onOpen={vi.fn()} onMakeList={vi.fn()} />)
+    render(<RecipesView recipes={[]} loading hasList={false} onOpen={vi.fn()} onMakeList={vi.fn()} onCooked={vi.fn()} />)
     expect(screen.getByRole('status')).toHaveTextContent('Loading recipes…')
     expect(screen.queryByText('No recipes yet.')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '+ New' })).toBeInTheDocument() // can still add one

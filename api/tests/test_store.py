@@ -220,10 +220,10 @@ class TestAisles:
 
 
 class TestToCook:
-    def test_adding_nothing_changes_nothing(self, store):
+    def test_each_recipe_once_in_order(self, store):
         hh = store.create_household("alice")["householdId"]
-        store.add_to_cook(hh, [])
-        store.add_to_cook(hh, ["r2", "r1", "r2"])
+        store.add_to_cook(hh, ["r2", "r1"])
+        store.add_to_cook(hh, ["r2"])
         assert store.get_household(hh)["toCook"] == ["r1", "r2"]
 
 

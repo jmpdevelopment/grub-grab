@@ -5,7 +5,7 @@ from decimal import Decimal
 import boto3
 import pytest
 
-from grubgrab import ai, handler
+from grubgrab import handler
 from grubgrab.handler import handle, lambda_handler
 from grubgrab.store import Store
 

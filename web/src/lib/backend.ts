@@ -79,8 +79,8 @@ export class CloudBackend implements Backend {
   rotateInvite = () => this.req<Household>('POST', '/household/invite')
   setAisle = (name: string, aisle: string) => this.req<Household>('PUT', '/household/aisles', { name, aisle })
   removeToCook = (recipeId: string) => this.req<Household>('DELETE', `/household/to-cook/${encodeURIComponent(recipeId)}`)
-  /** Starts the AI import (a background job on the server), then checks on it until it's finished. */
-  /** The server writes the recipe in the household's recipe language. */
+  /** Starts the AI import (a background job on the server, written in the household's recipe language),
+   *  then checks on it until it's finished. */
   importRecipe = async (link: string): Promise<ImportedRecipe> => {
     const { jobId, remaining } = await this.req<{ jobId: string; remaining: number }>('POST', '/recipes/import', { link })
     const deadline = Date.now() + this.timing.timeoutMs

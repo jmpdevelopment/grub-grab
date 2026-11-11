@@ -15,7 +15,7 @@ interface Props {
   loading?: boolean
   /** Recipes picked for a shopping list: kept at the top, ticked, until someone unticks them. */
   toCook?: string[]
-  onCooked?: (recipe: Recipe) => void
+  onCooked: (recipe: Recipe) => void
 }
 
 export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = false, toCook = [], onCooked }: Props) {
@@ -66,7 +66,7 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
       <label className="check">
         {planned ? (
           // Ticked while it's still to cook; unticking takes it off (cooked, or not planned any more).
-          <input type="checkbox" checked aria-label={t('recipes.toCookItem', { title: r.title })} onChange={() => onCooked?.(r)} />
+          <input type="checkbox" checked aria-label={t('recipes.toCookItem', { title: r.title })} onChange={() => onCooked(r)} />
         ) : (
           <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
         )}
@@ -124,13 +124,15 @@ export function RecipesView({ recipes, onOpen, onMakeList, hasList, loading = fa
         ) : (
           <>
             {toCookShown.length > 0 && (
-              <section aria-labelledby="to-cook">
-                <h2 id="to-cook" className="section-title">{t('recipes.toCook')}</h2>
-                <p className="hint">{t('recipes.toCookHint')}</p>
-                <ul className="cards">{toCookShown.map((r) => card(r, true))}</ul>
-              </section>
+              <>
+                <section aria-labelledby="to-cook">
+                  <h2 id="to-cook" className="section-title">{t('recipes.toCook')}</h2>
+                  <p className="hint">{t('recipes.toCookHint')}</p>
+                  <ul className="cards">{toCookShown.map((r) => card(r, true))}</ul>
+                </section>
+                <h2 className="section-title">{t('recipes.all')}</h2>
+              </>
             )}
-            {toCookShown.length > 0 && <h2 className="section-title">{t('recipes.all')}</h2>}
             <p className="hint">{t('recipes.hint')}</p>
             {shown.length === 0 && <p className="muted">{t('recipes.noMatch')}</p>}
             <ul className="cards">{rest.map((r) => card(r, false))}</ul>

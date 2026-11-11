@@ -35,6 +35,7 @@ PROBLEMS = {
     "general": {"broke", "data", "slow", "idea", "other"},
 }
 OUTCOMES = ("unchanged", "edited", "abandoned")
+KEEP_SECONDS = 365 * 24 * 3600  # a year, then the table's TTL removes them
 MAX_REPORTS_PER_DAY = 20  # import and general reports, per person
 MAX_ERRORS_PER_DAY = 30  # automatic error reports, per person
 MAX_NOTE = 1000
@@ -133,7 +134,7 @@ def build(data: dict, *, user: str, household: str | None, job: dict | None, now
         "sk": f"{stamp}#{record_id}",
         "id": record_id,
         "at": int(now),
-        "expiresAt": int(now) + 365 * 24 * 3600,
+        "expiresAt": int(now) + KEEP_SECONDS,
         "userId": user,
         "householdId": household or "",
         "client": _object(data.get("client"), "Client", _MAX_CLIENT_BYTES),

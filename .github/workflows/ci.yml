@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -r api/requirements-dev.txt
-      - run: pytest  # fails below 100% line+branch coverage (see api/pyproject.toml)
+      - run: python -m pyflakes src tests && pytest  # pyflakes: nothing unused; pytest fails below 100% line+branch coverage
         working-directory: api
 
   web:
@@ -54,8 +54,8 @@ jobs:
           python-version: "3.13"
       - run: npm ci && npm run build
         working-directory: web
-      - run: npm install -g aws-cdk && pip install -r infra/requirements.txt pytest
-      - run: pytest -q tests  # security settings + no dependency cycles
+      - run: npm install -g aws-cdk && pip install -r infra/requirements.txt pytest pyflakes
+      - run: python -m pyflakes stack.py app.py tests && pytest -q tests  # nothing unused; security settings + no dependency cycles
         working-directory: infra
       - run: cdk synth --quiet -c googleClientId=ci-placeholder.apps.googleusercontent.com
         working-directory: infra

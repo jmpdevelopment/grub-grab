@@ -10,12 +10,20 @@ from grubgrab import feedback
 from grubgrab.feedback import build, domain
 from grubgrab.handler import handle
 
-from test_handler import call, error, event, store  # noqa: F401 (store: Alice and Bob have households)
+from test_handler import call, error, event
 
 LINK = "https://www.bbcgoodfood.com/recipes/easy-chicken-curry"
 DRAFT = {"title": "Curry", "servings": 4, "link": LINK, "tags": ["chicken"], "ingredients": [{"name": "chicken", "quantity": 6, "unit": "", "aisle": "meat"}]}
 JOURNEY = [{"t": 1, "type": "screen", "name": "editor"}, {"t": 2, "type": "api", "route": "POST /recipes/import", "status": 202}]
 CLIENT = {"appVersion": "abc123", "language": "lt", "userAgent": "Mozilla/5.0 (iPhone)"}
+
+
+@pytest.fixture
+def store(store):
+    """Alice and Bob have each started a household; Carol hasn't."""
+    store.create_household("alice")
+    store.create_household("bob")
+    return store
 
 
 @pytest.fixture

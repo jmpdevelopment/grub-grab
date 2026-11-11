@@ -4,3 +4,4 @@ anthropic[aws]>=2.6,<3
 moto[dynamodb,cognitoidp,sns,sqs,secretsmanager]>=5
 pytest
 pytest-cov
+pyflakes  # unused imports and variables (CI runs it)

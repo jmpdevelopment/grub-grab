@@ -45,7 +45,6 @@ DECLINED_REQUEST_TTL = 365 * 24 * 3600  # a decline sticks for a year
 NOTIFY_EVERY_SECONDS = 3600
 _ACCESS = "ACCESS"
 IMPORT_JOB_TTL = 30 * 24 * 3600  # long enough for a problem report about the import to include its details
-FEEDBACK_TTL = 365 * 24 * 3600  # problem reports and import outcomes are kept a year
 
 
 def _strip_keys(item: dict) -> dict:
@@ -123,7 +122,7 @@ class Store:
             self.table.delete_item(Key={"PK": f"INVITE#{code}", "SK": "INVITE"})
             self.table.delete_item(Key=meta_key)
             return self.create_household(user_sub, recipe_language)
-        return {"householdId": household_id, "inviteCode": code, "recipeLanguage": recipe_language, "aisles": {}, "toCook": []}
+        return self.get_household(household_id)
 
     def get_household(self, household_id: str) -> dict:
         key = {"PK": f"HH#{household_id}", "SK": "META"}
@@ -138,13 +137,12 @@ class Store:
         }
 
     def add_to_cook(self, household_id: str, recipe_ids: list[str]) -> None:
-        """Recipes picked for the shopping list: shown under "To cook" until someone unticks them."""
-        if recipe_ids:
-            self.table.update_item(
-                Key={"PK": f"HH#{household_id}", "SK": "META"},
-                UpdateExpression="ADD toCook :ids",
-                ExpressionAttributeValues={":ids": set(recipe_ids)},
-            )
+        """Recipes picked for the shopping list (never none): shown under "To cook" until someone unticks them."""
+        self.table.update_item(
+            Key={"PK": f"HH#{household_id}", "SK": "META"},
+            UpdateExpression="ADD toCook :ids",
+            ExpressionAttributeValues={":ids": set(recipe_ids)},
+        )
 
     def remove_to_cook(self, household_id: str, recipe_id: str) -> None:
         """Cooked (or no longer planned). DynamoDB drops the set when its last recipe goes."""
